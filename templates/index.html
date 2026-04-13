@@ -1,0 +1,223 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Endurance Race Planner</title>
+  <link rel="stylesheet" href="/static/style.css" />
+</head>
+<body>
+  <header>
+    <div class="header-inner">
+      <div class="logo">
+        <span class="logo-icon">⬡</span>
+        <span class="logo-text">ENDURANCE RACE PLANNER</span>
+      </div>
+      <nav class="tab-nav" id="mainNav">
+        <button class="tab-btn active" data-tab="setup">Setup</button>
+        <button class="tab-btn" data-tab="stint">Stint Plan</button>
+        <button class="tab-btn" data-tab="live">Live Mode</button>
+        <button class="tab-btn" data-tab="export">Export</button>
+      </nav>
+      <div class="plan-selector">
+        <select id="planSelect">
+          <option value="">— New Plan —</option>
+        </select>
+        <button class="btn-ghost" id="deletePlanBtn" title="Delete plan">✕</button>
+      </div>
+    </div>
+  </header>
+
+  <main>
+
+    <!-- ======= SETUP TAB ======= -->
+    <section id="tab-setup" class="tab-section active">
+      <h2 class="section-title">Race Setup</h2>
+      <form id="setupForm" class="card-grid">
+
+        <div class="card">
+          <h3>Race Parameters</h3>
+          <div class="form-group">
+            <label>Plan Name</label>
+            <input type="text" id="planName" placeholder="e.g. Daytona 24H" />
+          </div>
+          <div class="form-group">
+            <label>Race Duration</label>
+            <div class="input-row">
+              <select id="raceDurationPreset">
+                <option value="">Custom</option>
+                <option value="2.4">2.4 Hours</option>
+                <option value="6">6 Hours</option>
+                <option value="12">12 Hours</option>
+                <option value="24">24 Hours</option>
+              </select>
+              <input type="number" id="raceDuration" step="0.1" min="0.5" max="25" value="6" />
+              <span class="unit">hrs</span>
+            </div>
+          </div>
+          <div class="form-group">
+            <label>Estimated Lap Time</label>
+            <div class="input-row">
+              <input type="number" id="lapTimeMin" min="0" max="59" value="1" class="w60" placeholder="mm" />
+              <span class="sep">:</span>
+              <input type="number" id="lapTimeSec" min="0" max="59" value="45" step="0.1" class="w80" placeholder="ss.t" />
+              <span class="unit">mm:ss</span>
+            </div>
+          </div>
+          <div class="form-group">
+            <label>Pit Loss Time</label>
+            <div class="input-row">
+              <input type="number" id="pitLoss" value="35" min="0" max="300" />
+              <span class="unit">seconds</span>
+            </div>
+          </div>
+          <div class="form-group">
+            <label>Max Continuous Stint</label>
+            <div class="input-row">
+              <input type="number" id="maxContinuousHrs" step="0.25" min="0.5" max="6" value="2.5" />
+              <span class="unit">hrs (fatigue limit)</span>
+            </div>
+          </div>
+        </div>
+
+        <div class="card">
+          <h3>Fuel Strategy</h3>
+          <div class="form-group">
+            <label>Tank Capacity</label>
+            <div class="input-row">
+              <input type="number" id="fuelCapacity" step="0.1" min="1" max="200" value="70" />
+              <span class="unit">litres</span>
+            </div>
+          </div>
+          <div class="form-group">
+            <label>Fuel Burn per Lap</label>
+            <div class="input-row">
+              <input type="number" id="fuelPerLap" step="0.01" min="0.1" max="50" value="3.5" />
+              <span class="unit">litres/lap</span>
+            </div>
+          </div>
+          <div class="form-group">
+            <label>Fuel Mode</label>
+            <div class="input-row mode-btns">
+              <button type="button" class="mode-btn" data-mode="save">Save <span class="mode-tag">−8%</span></button>
+              <button type="button" class="mode-btn active" data-mode="normal">Normal</button>
+              <button type="button" class="mode-btn" data-mode="push">Push <span class="mode-tag">+8%</span></button>
+            </div>
+          </div>
+          <div class="fuel-preview card-inset" id="fuelPreview">
+            <div class="preview-row"><span>Laps per tank:</span><strong id="previewLaps">—</strong></div>
+            <div class="preview-row"><span>Approx stint length:</span><strong id="previewStintTime">—</strong></div>
+            <div class="preview-row"><span>Fuel/lap (effective):</span><strong id="previewFpl">—</strong></div>
+          </div>
+        </div>
+
+        <div class="card">
+          <h3>Drivers</h3>
+          <div id="driverList"></div>
+          <button type="button" class="btn-ghost add-driver-btn" id="addDriverBtn">+ Add Driver</button>
+        </div>
+
+      </form>
+
+      <div class="action-bar">
+        <button class="btn-primary" id="calculateBtn">Calculate Strategy</button>
+        <button class="btn-secondary" id="saveSetupBtn">Save Plan</button>
+      </div>
+
+      <div id="setupMessages" class="message-area"></div>
+    </section>
+
+    <!-- ======= STINT PLAN TAB ======= -->
+    <section id="tab-stint" class="tab-section">
+      <div class="stint-header">
+        <h2 class="section-title">Stint Plan</h2>
+        <div id="strategyMeta" class="meta-badges"></div>
+      </div>
+
+      <div id="stintTableWrap">
+        <p class="empty-state">Configure your race in Setup, then click "Calculate Strategy".</p>
+      </div>
+
+      <div class="timeline-wrap" id="timelineWrap" style="display:none">
+        <h3>Driver Rotation Timeline</h3>
+        <div id="timeline"></div>
+      </div>
+    </section>
+
+    <!-- ======= LIVE MODE TAB ======= -->
+    <section id="tab-live" class="tab-section">
+      <h2 class="section-title">Live Race Mode</h2>
+
+      <div class="live-grid">
+        <div class="card live-status-card" id="liveStatusCard">
+          <h3>Current Status</h3>
+          <div class="live-lap-input">
+            <label>Current Lap</label>
+            <div class="input-row">
+              <input type="number" id="currentLap" value="1" min="1" />
+              <button class="btn-primary" id="updateLapBtn">Update</button>
+            </div>
+          </div>
+          <div id="liveStatus" class="live-status-display">
+            <p class="empty-state">Load a plan and enter current lap to get live updates.</p>
+          </div>
+        </div>
+
+        <div class="card">
+          <h3>Stint Progress</h3>
+          <div id="liveStintList" class="live-stint-list">
+            <p class="empty-state">No stints loaded.</p>
+          </div>
+        </div>
+
+        <div class="card">
+          <h3>Log Event</h3>
+          <div class="form-group">
+            <label>Lap</label>
+            <input type="number" id="eventLap" min="1" />
+          </div>
+          <div class="form-group">
+            <label>Type</label>
+            <select id="eventType">
+              <option value="pit">Pit Stop</option>
+              <option value="fcl">Full Course Lap / Yellow</option>
+              <option value="note">Note</option>
+            </select>
+          </div>
+          <div class="form-group">
+            <label>Note</label>
+            <input type="text" id="eventNote" placeholder="Optional note…" />
+          </div>
+          <button class="btn-secondary" id="logEventBtn">Log Event</button>
+          <div id="eventLog" class="event-log"></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ======= EXPORT TAB ======= -->
+    <section id="tab-export" class="tab-section">
+      <h2 class="section-title">Export Strategy</h2>
+      <div id="exportContent" class="export-area">
+        <p class="empty-state">Load a plan to generate an export.</p>
+      </div>
+      <div class="action-bar" id="exportActions" style="display:none">
+        <button class="btn-primary" onclick="window.print()">Print / Save as PDF</button>
+      </div>
+    </section>
+
+  </main>
+
+  <!-- Driver row template (hidden) -->
+  <template id="driverRowTemplate">
+    <div class="driver-row">
+      <input type="color" class="driver-color" value="#4fc3f7" />
+      <input type="text" class="driver-name" placeholder="Driver name" />
+      <input type="number" class="driver-maxhrs" step="0.5" min="0.5" max="12" value="2.5" title="Max continuous hours" />
+      <span class="unit">hrs max</span>
+      <button type="button" class="btn-ghost remove-driver">✕</button>
+    </div>
+  </template>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>
