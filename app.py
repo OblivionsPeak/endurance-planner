@@ -89,6 +89,7 @@ def init_db():
         )
     """)
     # Tire data columns (added in migration — safe to run on existing DBs)
+    cur.execute("ALTER TABLE drivers ADD COLUMN IF NOT EXISTS min_hours FLOAT DEFAULT 0")
     cur.execute("ALTER TABLE stints ADD COLUMN IF NOT EXISTS tire_compound TEXT")
     cur.execute("ALTER TABLE stints ADD COLUMN IF NOT EXISTS tire_set TEXT")
     cur.execute("ALTER TABLE stints ADD COLUMN IF NOT EXISTS tire_age_laps INTEGER")
@@ -251,8 +252,8 @@ def create_plan():
     for i, d in enumerate(drivers_data):
         color = d.get('color', colors[i % len(colors)])
         db_exec(
-            "INSERT INTO drivers (plan_id, name, max_hours, color) VALUES (%s, %s, %s, %s)",
-            (plan_id, d['name'], d.get('max_hours', 2.0), color)
+            "INSERT INTO drivers (plan_id, name, max_hours, min_hours, color) VALUES (%s, %s, %s, %s, %s)",
+            (plan_id, d['name'], d.get('max_hours', 2.0), d.get('min_hours', 0), color)
         )
     db_commit()
 
@@ -303,8 +304,8 @@ def update_plan(plan_id):
         for i, d in enumerate(data['drivers']):
             color = d.get('color', colors[i % len(colors)])
             db_exec(
-                "INSERT INTO drivers (plan_id, name, max_hours, color) VALUES (%s, %s, %s, %s)",
-                (plan_id, d['name'], d.get('max_hours', 2.0), color)
+                "INSERT INTO drivers (plan_id, name, max_hours, min_hours, color) VALUES (%s, %s, %s, %s, %s)",
+                (plan_id, d['name'], d.get('max_hours', 2.0), d.get('min_hours', 0), color)
             )
 
     db_commit()
@@ -487,17 +488,32 @@ def live_status(plan_id):
 
     plan_row   = db_exec("SELECT config FROM race_plans WHERE id=%s", (plan_id,)).fetchone()
     config     = json.loads(plan_row['config'])
-    lap_time_s = config.get('lap_time_s', 90)
+    lap_time_s    = config.get('lap_time_s', 90)
+    fuel_per_lap  = config.get('fuel_per_lap_l', 3.5)
+    fuel_mode     = config.get('fuel_mode', 'normal')
+    fuel_capacity = config.get('fuel_capacity_l', 70)
+    effective_fpl = fuel_per_lap * FUEL_MODE_MULTIPLIERS.get(fuel_mode, 1.0)
+
     mins_until_pit = round(laps_until_pit * lap_time_s / 60, 1)
 
+    # Fuel estimate: planned load minus what's been burned this stint
+    laps_into_stint    = max(current_lap - current_stint['start_lap'], 0)
+    fuel_used_stint    = laps_into_stint * effective_fpl
+    fuel_remaining     = max((current_stint['fuel_load'] or 0) - fuel_used_stint, 0)
+    laps_of_fuel       = (fuel_remaining / effective_fpl) if effective_fpl > 0 else 0
+    fuel_pct           = round((fuel_remaining / fuel_capacity) * 100) if fuel_capacity > 0 else 0
+
     return jsonify({
-        'status':          'racing',
-        'current_lap':     current_lap,
-        'current_stint':   current_stint,
-        'next_stint':      next_stint,
-        'laps_until_pit':  laps_until_pit,
-        'mins_until_pit':  mins_until_pit,
-        'alert':           laps_until_pit <= 3 and laps_until_pit > 0,
+        'status':           'racing',
+        'current_lap':      current_lap,
+        'current_stint':    dict(current_stint),
+        'next_stint':       dict(next_stint) if next_stint else None,
+        'laps_until_pit':   laps_until_pit,
+        'mins_until_pit':   mins_until_pit,
+        'alert':            laps_until_pit <= 3 and laps_until_pit > 0,
+        'fuel_remaining_l': round(fuel_remaining, 1),
+        'laps_of_fuel':     round(laps_of_fuel, 1),
+        'fuel_pct':         fuel_pct,
     })
 
 
@@ -536,7 +552,7 @@ def export_plan(plan_id):
 
 def _get_drivers(plan_id):
     return db_exec(
-        "SELECT id, name, max_hours, color FROM drivers WHERE plan_id=%s ORDER BY id",
+        "SELECT id, name, max_hours, min_hours, color FROM drivers WHERE plan_id=%s ORDER BY id",
         (plan_id,)
     ).fetchall()
 

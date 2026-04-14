@@ -41,6 +41,37 @@
         <div class="card">
           <h3>Race Parameters</h3>
           <div class="form-group">
+            <label>Car Preset</label>
+            <select id="carPreset">
+              <option value="">— Select car to pre-fill —</option>
+              <optgroup label="GTP">
+                <option value="gtp_porsche">Porsche 963</option>
+                <option value="gtp_bmw">BMW M Hybrid V8</option>
+                <option value="gtp_cadillac">Cadillac V-Series R</option>
+                <option value="gtp_acura">Acura ARX-06</option>
+              </optgroup>
+              <optgroup label="Prototype">
+                <option value="lmp2">LMP2 — Dallara P217</option>
+                <option value="lmp3">LMP3 — Ligier JS P320</option>
+              </optgroup>
+              <optgroup label="GT">
+                <option value="gte_ferrari">GTE — Ferrari 488</option>
+                <option value="gte_porsche">GTE — Porsche 911 RSR</option>
+                <option value="gt3_bmw">GT3 — BMW M4</option>
+                <option value="gt3_ferrari">GT3 — Ferrari 296</option>
+                <option value="gt3_porsche">GT3 — Porsche 911 GT3 R</option>
+                <option value="gt3_lambo">GT3 — Lamborghini Huracán</option>
+                <option value="gt3_mclaren">GT3 — McLaren 720S</option>
+                <option value="gt3_mercedes">GT3 — Mercedes-AMG</option>
+                <option value="gt4">GT4 — Generic</option>
+              </optgroup>
+              <optgroup label="Other">
+                <option value="mx5">Mazda MX-5 Cup</option>
+                <option value="ir18">Dallara IR18 (IndyCar)</option>
+              </optgroup>
+            </select>
+          </div>
+          <div class="form-group">
             <label>Plan Name</label>
             <input type="text" id="planName" placeholder="e.g. Daytona 24H" />
           </div>
@@ -144,6 +175,8 @@
         <div id="strategyMeta" class="meta-badges"></div>
       </div>
 
+      <div id="minTimeWarnings" class="min-time-warnings" style="display:none"></div>
+
       <div id="stintTableWrap">
         <p class="empty-state">Configure your race in Setup, then click "Calculate Strategy".</p>
       </div>
@@ -159,6 +192,7 @@
       <div class="live-mode-header">
         <h2 class="section-title">Live Race Mode</h2>
         <div class="telemetry-hint plan-id-display"></div>
+        <button class="btn-ghost pit-wall-btn" id="pitWallBtn" title="Toggle pit wall view">⛶ Pit Wall Mode</button>
       </div>
 
       <div class="live-grid">
@@ -264,13 +298,47 @@
 
   </main>
 
+  <!-- Pit Wall Overlay -->
+  <div id="pitWallOverlay" class="pit-wall-overlay" style="display:none">
+    <button class="pit-wall-close" id="pitWallClose">✕ Exit Pit Wall</button>
+    <div class="pit-wall-content">
+      <div class="pw-stint-num" id="pwStintNum">—</div>
+      <div class="pw-driver"    id="pwDriver">—</div>
+      <div class="pw-divider"></div>
+      <div class="pw-laps-label">LAPS TO PIT</div>
+      <div class="pw-laps"      id="pwLapsToPit">—</div>
+      <div class="pw-divider"></div>
+      <div class="pw-row">
+        <div class="pw-block">
+          <div class="pw-block-label">FUEL</div>
+          <div class="pw-block-val" id="pwFuel">—</div>
+        </div>
+        <div class="pw-block">
+          <div class="pw-block-label">FUEL LAPS</div>
+          <div class="pw-block-val" id="pwFuelLaps">—</div>
+        </div>
+        <div class="pw-block">
+          <div class="pw-block-label">NEXT DRIVER</div>
+          <div class="pw-block-val" id="pwNextDriver">—</div>
+        </div>
+      </div>
+      <div class="pw-lap-input">
+        <label>Current Lap</label>
+        <input type="number" id="pwCurrentLap" min="1" value="1" />
+        <button class="btn-primary" id="pwUpdateBtn">Update</button>
+      </div>
+    </div>
+  </div>
+
   <!-- Driver row template (hidden) -->
   <template id="driverRowTemplate">
     <div class="driver-row">
       <input type="color" class="driver-color" value="#4fc3f7" />
       <input type="text" class="driver-name" placeholder="Driver name" />
-      <input type="number" class="driver-maxhrs" step="0.5" min="0.5" max="12" value="2.5" title="Max continuous hours" />
-      <span class="unit">hrs max</span>
+      <input type="number" class="driver-maxhrs" step="0.5" min="0.5" max="12" value="2.5" title="Max continuous hours per stint" />
+      <span class="unit">max</span>
+      <input type="number" class="driver-minhrs" step="0.25" min="0" max="12" value="0" title="Minimum total race hours (series requirement, 0 = no minimum)" />
+      <span class="unit">min hrs</span>
       <button type="button" class="btn-ghost remove-driver">✕</button>
     </div>
   </template>

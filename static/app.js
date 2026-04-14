@@ -21,6 +21,28 @@ const TIRE_LABELS = { S: 'Soft', M: 'Med', H: 'Hard', I: 'Inter', W: 'Wet' };
 const TIRE_OPTS = Object.entries(TIRE_LABELS)
   .map(([v, l]) => `<option value="${v}">${l}</option>`).join('');
 
+// Car presets: tank capacity (L) and typical fuel per lap (L) as a starting point.
+// fpl values are approximate mid-range track estimates — always verify for your circuit.
+const CAR_PRESETS = {
+  gtp_porsche:   { tank: 75,  fpl: 3.5 },
+  gtp_bmw:       { tank: 75,  fpl: 3.4 },
+  gtp_cadillac:  { tank: 75,  fpl: 3.5 },
+  gtp_acura:     { tank: 75,  fpl: 3.4 },
+  lmp2:          { tank: 75,  fpl: 3.0 },
+  lmp3:          { tank: 55,  fpl: 2.4 },
+  gte_ferrari:   { tank: 90,  fpl: 3.9 },
+  gte_porsche:   { tank: 90,  fpl: 3.8 },
+  gt3_bmw:       { tank: 100, fpl: 4.1 },
+  gt3_ferrari:   { tank: 100, fpl: 3.9 },
+  gt3_porsche:   { tank: 100, fpl: 3.8 },
+  gt3_lambo:     { tank: 100, fpl: 4.0 },
+  gt3_mclaren:   { tank: 100, fpl: 3.9 },
+  gt3_mercedes:  { tank: 100, fpl: 4.0 },
+  gt4:           { tank: 65,  fpl: 2.8 },
+  mx5:           { tank: 45,  fpl: 1.9 },
+  ir18:          { tank: 70,  fpl: 2.5 },
+};
+
 // ---------------------------------------------------------------------------
 // DOM helpers
 // ---------------------------------------------------------------------------
@@ -160,6 +182,7 @@ function buildDrivers() {
   return $$('.driver-row').map((row, i) => ({
     name:      $('.driver-name', row).value.trim() || `Driver ${i + 1}`,
     max_hours: parseFloat($('.driver-maxhrs', row).value) || 2.5,
+    min_hours: parseFloat($('.driver-minhrs', row).value) || 0,
     color:     $('.driver-color', row).value,
   }));
 }
@@ -198,9 +221,10 @@ function addDriverRow(driver = null) {
   const idx  = $$('.driver-row').length;
 
   if (driver) {
-    $('.driver-color', row).value   = driver.color  || COLORS[idx % COLORS.length];
-    $('.driver-name',  row).value   = driver.name   || '';
+    $('.driver-color', row).value   = driver.color     || COLORS[idx % COLORS.length];
+    $('.driver-name',  row).value   = driver.name      || '';
     $('.driver-maxhrs',row).value   = driver.max_hours || 2.5;
+    $('.driver-minhrs',row).value   = driver.min_hours || 0;
   } else {
     $('.driver-color', row).value   = COLORS[idx % COLORS.length];
   }
@@ -463,6 +487,38 @@ function renderStintTable(plan) {
     });
   });
 
+  // Driver minimum time warnings
+  const lapTimeSec  = config.lap_time_s || 90;
+  const driverHours = {};
+  (plan.drivers || []).forEach(d => { driverHours[d.id] = 0; });
+  stints.forEach(s => {
+    if (s.driver_id != null) {
+      const laps = s.end_lap - s.start_lap + 1;
+      driverHours[s.driver_id] = (driverHours[s.driver_id] || 0) + (laps * lapTimeSec / 3600);
+    }
+  });
+  const minWarnings = (plan.drivers || []).filter(d =>
+    d.min_hours > 0 && (driverHours[d.id] || 0) < d.min_hours
+  );
+  const minWarnEl = document.getElementById('minTimeWarnings');
+  if (minWarnEl) {
+    if (minWarnings.length) {
+      minWarnEl.innerHTML = minWarnings.map(d => {
+        const actual = (driverHours[d.id] || 0);
+        const deficit = (d.min_hours - actual).toFixed(2);
+        return `<span class="min-time-warn">
+          <span class="driver-dot" style="background:${d.color}"></span>
+          <strong>${d.name}</strong> is <strong>${deficit}h short</strong> of minimum
+          (${actual.toFixed(2)}h planned / ${d.min_hours}h required)
+        </span>`;
+      }).join('');
+      minWarnEl.style.display = 'flex';
+    } else {
+      minWarnEl.innerHTML = '';
+      minWarnEl.style.display = 'none';
+    }
+  }
+
   renderTimeline(plan);
 }
 
@@ -657,6 +713,31 @@ function showTirePrompt(btn, planId, currentStintId, nextStint) {
   promptEl.querySelector('.tp-skip').addEventListener('click',    () => finish(false));
 }
 
+// Audio alert — lazy-init AudioContext on first user interaction
+let _audioCtx = null;
+function _getAudioCtx() {
+  if (!_audioCtx) _audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+  return _audioCtx;
+}
+function playPitChime() {
+  try {
+    const ctx = _getAudioCtx();
+    const now = ctx.currentTime;
+    [[880, 0], [1100, 0.18], [880, 0.36]].forEach(([freq, offset]) => {
+      const osc  = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.connect(gain); gain.connect(ctx.destination);
+      osc.frequency.value = freq;
+      osc.type = 'sine';
+      gain.gain.setValueAtTime(0.25, now + offset);
+      gain.gain.exponentialRampToValueAtTime(0.001, now + offset + 0.15);
+      osc.start(now + offset); osc.stop(now + offset + 0.15);
+    });
+  } catch (_) {}
+}
+
+let _lastAlertLap = null;
+
 async function updateLiveStatus() {
   if (!state.activePlan) return;
   const lap = parseInt($('#currentLap').value) || 1;
@@ -667,6 +748,7 @@ async function updateLiveStatus() {
   const statusEl = $('#liveStatus');
   if (data.status === 'finished') {
     statusEl.innerHTML = '<div class="live-status-block"><p style="color:var(--green);text-align:center;font-weight:700;">RACE COMPLETE</p></div>';
+    updatePitWall(null);
     return;
   }
 
@@ -675,12 +757,22 @@ async function updateLiveStatus() {
   const laps2pit = data.laps_until_pit;
   const alertClass = laps2pit <= 1 ? 'alert-critical' : laps2pit <= 3 ? 'alert-pit' : '';
 
-  // highlight current stint in list
+  // Pit window audio alert — chime once per lap when within window
+  if (s.pit_lap && laps2pit <= 3 && laps2pit > 0 && _lastAlertLap !== lap) {
+    _lastAlertLap = lap;
+    playPitChime();
+  }
+
+  // Highlight current stint in list
   $$('.live-stint-item').forEach(item => {
     const start = parseInt(item.dataset.startLap);
     const end   = parseInt(item.dataset.endLap);
     item.classList.toggle('is-current', lap >= start && lap <= end);
   });
+
+  // Fuel display colours
+  const fuelPct      = data.fuel_pct ?? 0;
+  const fuelBarColor = fuelPct < 20 ? 'var(--red)' : fuelPct < 40 ? 'var(--yellow)' : 'var(--green)';
 
   statusEl.innerHTML = `
     <div class="live-status-block ${alertClass}">
@@ -712,16 +804,58 @@ async function updateLiveStatus() {
         <span class="live-stat-val">${data.mins_until_pit} min</span>
       </div>
       ` : `<div class="live-stat-row"><span class="live-stat-label">Final stint — no pit</span></div>`}
-      ${next ? `
+      <div class="live-stat-divider"></div>
       <div class="live-stat-row">
-        <span class="live-stat-label">Next driver</span>
+        <span class="live-stat-label">Est. Fuel</span>
+        <span class="live-stat-val" style="color:${fuelBarColor}">${data.fuel_remaining_l} L</span>
+      </div>
+      <div class="fuel-mini-bar">
+        <div class="fuel-mini-fill" style="width:${fuelPct}%;background:${fuelBarColor}"></div>
+      </div>
+      <div class="live-stat-row">
+        <span class="live-stat-label">Laps of Fuel</span>
+        <span class="live-stat-val" style="color:${fuelBarColor}">${data.laps_of_fuel}</span>
+      </div>
+      ${next ? `
+      <div class="live-stat-divider"></div>
+      <div class="live-stat-row">
+        <span class="live-stat-label">Next Driver</span>
         <span class="live-stat-val"><span class="driver-dot" style="background:${next.driver_color||'#4fc3f7'}"></span>${next.driver_name || '—'}</span>
       </div>
       ` : ''}
     </div>
-    ${laps2pit <= 3 && laps2pit > 0 ? `<div class="pit-alert-banner">⚑ PIT IN ${laps2pit} LAP${laps2pit === 1 ? '' : 'S'}</div>` : ''}
-    ${laps2pit <= 0 && s.pit_lap ? `<div class="pit-alert-banner" style="background:var(--red);color:#fff">PIT THIS LAP</div>` : ''}
+    ${laps2pit <= 3 && laps2pit > 0 ? `<div class="pit-alert-banner pit-alert-pulse">⚑ PIT IN ${laps2pit} LAP${laps2pit === 1 ? '' : 'S'}</div>` : ''}
+    ${laps2pit <= 0 && s.pit_lap ? `<div class="pit-alert-banner pit-alert-now">▶ PIT THIS LAP</div>` : ''}
   `;
+
+  updatePitWall(data);
+}
+
+function updatePitWall(data) {
+  const overlay = $('#pitWallOverlay');
+  if (!overlay || overlay.style.display === 'none') return;
+  if (!data) {
+    ['pwStintNum','pwDriver','pwLapsToPit','pwFuel','pwFuelLaps','pwNextDriver']
+      .forEach(id => { $('#' + id).textContent = '—'; });
+    return;
+  }
+  const s        = data.current_stint;
+  const laps2pit = data.laps_until_pit;
+  $('#pwStintNum').textContent   = `STINT #${s.stint_num}`;
+  $('#pwDriver').textContent     = s.driver_name || '—';
+  $('#pwFuel').textContent       = `${data.fuel_remaining_l} L`;
+  $('#pwFuelLaps').textContent   = String(data.laps_of_fuel);
+  $('#pwNextDriver').textContent = data.next_stint?.driver_name || 'FINISH';
+
+  const lapsEl = $('#pwLapsToPit');
+  if (!s.pit_lap) {
+    lapsEl.textContent = 'FINAL'; lapsEl.className = 'pw-laps pw-laps-ok';
+  } else if (laps2pit <= 0) {
+    lapsEl.textContent = 'PIT NOW'; lapsEl.className = 'pw-laps pw-laps-critical';
+  } else {
+    lapsEl.textContent = laps2pit;
+    lapsEl.className = `pw-laps ${laps2pit <= 1 ? 'pw-laps-critical' : laps2pit <= 3 ? 'pw-laps-warn' : 'pw-laps-ok'}`;
+  }
 }
 
 function renderEventLog(events) {
@@ -1145,6 +1279,39 @@ function initEvents() {
   });
   $('#lapSec').addEventListener('keydown', e => { if (e.key === 'Enter') logLap(); });
   $('#logLapBtn').addEventListener('click', logLap);
+
+  // Car preset — pre-fills tank capacity and fuel per lap
+  $('#carPreset').addEventListener('change', function() {
+    const preset = CAR_PRESETS[this.value];
+    if (!preset) return;
+    $('#fuelCapacity').value = preset.tank;
+    $('#fuelPerLap').value   = preset.fpl;
+    updateFuelPreview();
+    // Reset select so user can reapply if needed
+    this.value = '';
+  });
+
+  // Pit wall mode toggle
+  $('#pitWallBtn').addEventListener('click', () => {
+    const overlay = $('#pitWallOverlay');
+    overlay.style.display = 'flex';
+    // Sync lap input
+    $('#pwCurrentLap').value = $('#currentLap').value || 1;
+    updateLiveStatus();
+  });
+  $('#pitWallClose').addEventListener('click', () => {
+    $('#pitWallOverlay').style.display = 'none';
+  });
+  $('#pwUpdateBtn').addEventListener('click', () => {
+    $('#currentLap').value = $('#pwCurrentLap').value;
+    updateLiveStatus();
+  });
+  $('#pwCurrentLap').addEventListener('keydown', e => {
+    if (e.key === 'Enter') {
+      $('#currentLap').value = $('#pwCurrentLap').value;
+      updateLiveStatus();
+    }
+  });
 
   // Log event
   $('#logEventBtn').addEventListener('click', async () => {
