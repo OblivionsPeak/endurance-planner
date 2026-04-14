@@ -442,6 +442,21 @@ table.stint-table tr.last-stint td { opacity: 0.6; }
 .tire-badge-i { background: rgba(62,207,142,0.18);  color: #3ecf8e; border: 1px solid #3ecf8e; }
 .tire-badge-w { background: rgba(59,114,212,0.18);  color: #6b9fe4; border: 1px solid #3b72d4; }
 
+/* ===== WEAR CELL (stint table) ===== */
+.wear-cell { white-space: nowrap; }
+.wear-label {
+  font-size: 0.65rem;
+  color: var(--text-muted);
+  letter-spacing: 0.04em;
+  margin-left: 1px;
+}
+.actual-wear-tag {
+  display: block;
+  font-size: 0.65rem;
+  color: var(--text-dim);
+  margin-top: 1px;
+}
+
 /* ===== TIRE PROMPT (live mode) ===== */
 .tire-prompt {
   display: flex;
@@ -455,7 +470,16 @@ table.stint-table tr.last-stint td { opacity: 0.6; }
   margin-top: 0.3rem;
   font-size: 0.78rem;
 }
-.tp-label { color: var(--text-dim); font-size: 0.72rem; }
+.tp-label { color: var(--text-dim); font-size: 0.72rem; white-space: nowrap; }
+.tp-unit  { font-size: 0.72rem; color: var(--text-dim); }
+.tp-row {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  width: 100%;
+  flex-wrap: wrap;
+}
+.tp-actions { margin-top: 0.2rem; }
 .tire-prompt select,
 .tire-prompt input {
   padding: 0.2rem 0.3rem;
@@ -463,11 +487,12 @@ table.stint-table tr.last-stint td { opacity: 0.6; }
   width: auto;
   min-width: 0;
 }
-.tire-prompt select  { width: 60px; }
-.tire-prompt .tp-set { width: 42px; }
-.tire-prompt .tp-age { width: 46px; }
+.tire-prompt select   { width: 60px; }
+.tire-prompt .tp-set  { width: 42px; }
+.tire-prompt .tp-age  { width: 54px; }
+.tire-prompt .tp-wear { width: 52px; }
 .tire-prompt .tp-confirm { padding: 0.25rem 0.6rem; font-size: 0.72rem; }
-.tire-prompt .tp-skip    { padding: 0.2rem 0.4rem;  font-size: 0.72rem; }
+.tire-prompt .tp-skip    { padding: 0.2rem  0.4rem; font-size: 0.72rem; }
 
 /* ===== TIMELINE ===== */
 .timeline-wrap {

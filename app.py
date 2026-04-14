@@ -92,6 +92,7 @@ def init_db():
     cur.execute("ALTER TABLE stints ADD COLUMN IF NOT EXISTS tire_compound TEXT")
     cur.execute("ALTER TABLE stints ADD COLUMN IF NOT EXISTS tire_set TEXT")
     cur.execute("ALTER TABLE stints ADD COLUMN IF NOT EXISTS tire_age_laps INTEGER")
+    cur.execute("ALTER TABLE stints ADD COLUMN IF NOT EXISTS tire_wear_pct FLOAT")
     conn.commit()
     cur.close()
     conn.close()
@@ -351,7 +352,7 @@ def recalculate(plan_id):
 def patch_stint(plan_id, stint_id):
     """Update tire data (and optionally completion state) for a single stint."""
     data    = request.get_json() or {}
-    allowed = ('tire_compound', 'tire_set', 'tire_age_laps', 'is_complete', 'actual_end_lap')
+    allowed = ('tire_compound', 'tire_set', 'tire_age_laps', 'tire_wear_pct', 'is_complete', 'actual_end_lap')
     fields  = []
     values  = []
     for key in allowed:
@@ -477,7 +478,7 @@ def _get_stints(plan_id):
     return db_exec(
         """SELECT s.id, s.stint_num, s.start_lap, s.end_lap, s.pit_lap,
                   s.fuel_load, s.fuel_mode, s.is_complete, s.actual_end_lap,
-                  s.tire_compound, s.tire_set, s.tire_age_laps,
+                  s.tire_compound, s.tire_set, s.tire_age_laps, s.tire_wear_pct,
                   d.name AS driver_name, d.color AS driver_color
            FROM stints s
            LEFT JOIN drivers d ON s.driver_id = d.id

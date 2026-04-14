@@ -120,6 +120,7 @@ function populateSetupForm(plan) {
   $('#maxContinuousHrs').value = c.max_continuous_hrs || 2.5;
   $('#fuelCapacity').value  = c.fuel_capacity_l || 70;
   $('#fuelPerLap').value    = c.fuel_per_lap_l || 3.5;
+  $('#tireWearRate').value  = c.tire_wear_rate_pct ?? 0;
 
   state.fuelMode = c.fuel_mode || 'normal';
   $$('.mode-btn').forEach(b => b.classList.toggle('active', b.dataset.mode === state.fuelMode));
@@ -140,6 +141,7 @@ function buildConfig() {
     fuel_capacity_l:    parseFloat($('#fuelCapacity').value)  || 70,
     fuel_per_lap_l:     parseFloat($('#fuelPerLap').value)    || 3.5,
     fuel_mode:          state.fuelMode,
+    tire_wear_rate_pct: parseFloat($('#tireWearRate').value) || 0,
   };
 }
 
@@ -302,10 +304,11 @@ function renderStintTable(plan) {
     return;
   }
 
-  const config     = plan.config || {};
-  const fuelCap    = config.fuel_capacity_l || 70;
-  const lapTimeSec = config.lap_time_s || 90;
-  const totalLaps  = stints[stints.length - 1]?.end_lap || 1;
+  const config       = plan.config || {};
+  const fuelCap      = config.fuel_capacity_l || 70;
+  const lapTimeSec   = config.lap_time_s || 90;
+  const totalLaps    = stints[stints.length - 1]?.end_lap || 1;
+  const wearRate     = config.tire_wear_rate_pct || 0;
 
   // meta badges
   const fpl         = config.fuel_per_lap_l * (MODE_MULT[config.fuel_mode] || 1);
@@ -328,6 +331,7 @@ function renderStintTable(plan) {
           <th>#</th>
           <th>Driver</th>
           <th>Tires</th>
+          <th>Est. Wear</th>
           <th>Start Lap</th>
           <th>End Lap</th>
           <th>Laps</th>
@@ -354,6 +358,15 @@ function renderStintTable(plan) {
     const ageVal  = s.tire_age_laps != null ? s.tire_age_laps : '';
     const setVal  = s.tire_set || '';
 
+    // Estimated wear: (starting age + laps this stint) × rate, capped at 100
+    const startAge   = s.tire_age_laps != null ? s.tire_age_laps : 0;
+    const estWear    = wearRate > 0 ? Math.min(Math.round((startAge + laps) * wearRate), 100) : null;
+    const wearColor  = estWear == null ? '' : estWear >= 80 ? 'var(--red)' : estWear >= 55 ? 'var(--yellow)' : 'var(--green)';
+    const actualWear = s.tire_wear_pct != null ? `<span class="actual-wear-tag">${fmt(s.tire_wear_pct, 0)}% actual</span>` : '';
+    const wearCell   = estWear != null
+      ? `<span style="color:${wearColor};font-weight:600">${estWear}%</span> <span class="wear-label">est</span>${actualWear}`
+      : (s.tire_wear_pct != null ? `${fmt(s.tire_wear_pct, 0)}%` : '<span style="color:var(--text-muted)">—</span>');
+
     html += `
       <tr class="${isLast ? 'last-stint' : ''}">
         <td>${s.stint_num}</td>
@@ -368,6 +381,7 @@ function renderStintTable(plan) {
             <input type="number" class="tire-age-inp" data-stint-id="${s.id}" value="${ageVal}" placeholder="Age"  min="0" max="999" title="Laps already on tires" />
           </div>
         </td>
+        <td class="wear-cell">${wearCell}</td>
         <td>${s.start_lap}</td>
         <td>${s.end_lap}</td>
         <td>${laps}</td>
@@ -534,24 +548,36 @@ async function completStintNow(planId, stintId) {
 }
 
 function showTirePrompt(btn, planId, currentStintId, nextStint) {
+  // currentStint = the stint just finished; we record its actual wear + next stint's incoming tires
+  const currentStint = state.activePlan?.stints?.find(s => s.id === currentStintId);
   const existing = {
-    cmp: nextStint.tire_compound || '',
-    set: nextStint.tire_set      || '',
-    age: nextStint.tire_age_laps != null ? nextStint.tire_age_laps : '',
+    cmp:  nextStint.tire_compound || '',
+    set:  nextStint.tire_set      || '',
+    age:  nextStint.tire_age_laps  != null ? nextStint.tire_age_laps  : '',
+    wear: currentStint?.tire_wear_pct != null ? currentStint.tire_wear_pct : '',
   };
 
   const promptEl = document.createElement('div');
   promptEl.className = 'tire-prompt';
   promptEl.innerHTML = `
-    <span class="tp-label">Next tires (Stint #${nextStint.stint_num}):</span>
-    <select class="tp-cmp">
-      <option value="">—</option>
-      ${TIRE_OPTS}
-    </select>
-    <input type="text"   class="tp-set" value="${existing.set}" placeholder="Set#" maxlength="6" />
-    <input type="number" class="tp-age" value="${existing.age}" placeholder="Age"  min="0" max="999" />
-    <button class="tp-confirm btn-primary">✓ Confirm</button>
-    <button class="tp-skip btn-ghost">Skip</button>
+    <div class="tp-row">
+      <span class="tp-label">Outgoing wear:</span>
+      <input type="number" class="tp-wear" value="${existing.wear}" placeholder="%" min="0" max="100" step="0.1" title="Actual wear % on tires coming off" />
+      <span class="tp-unit">%</span>
+    </div>
+    <div class="tp-row">
+      <span class="tp-label">Next tires (Stint #${nextStint.stint_num}):</span>
+      <select class="tp-cmp">
+        <option value="">—</option>
+        ${TIRE_OPTS}
+      </select>
+      <input type="text"   class="tp-set"  value="${existing.set}" placeholder="Set#" maxlength="6" />
+      <input type="number" class="tp-age"  value="${existing.age}" placeholder="Age laps" min="0" max="999" />
+    </div>
+    <div class="tp-row tp-actions">
+      <button class="tp-confirm btn-primary">✓ Confirm</button>
+      <button class="tp-skip btn-ghost">Skip</button>
+    </div>
   `;
 
   btn.replaceWith(promptEl);
@@ -561,12 +587,20 @@ function showTirePrompt(btn, planId, currentStintId, nextStint) {
 
   async function finish(saveTires) {
     if (saveTires) {
-      const cmp = promptEl.querySelector('.tp-cmp').value;
-      const set = promptEl.querySelector('.tp-set').value.trim();
-      const age = promptEl.querySelector('.tp-age').value;
+      const cmp  = promptEl.querySelector('.tp-cmp').value;
+      const set  = promptEl.querySelector('.tp-set').value.trim();
+      const age  = promptEl.querySelector('.tp-age').value;
+      const wear = promptEl.querySelector('.tp-wear').value;
+      // Save actual wear to the stint that just finished
+      if (wear !== '') {
+        await saveTireData(planId, currentStintId, {
+          tire_wear_pct: parseFloat(wear),
+        });
+      }
+      // Save incoming tire data to the next stint
       await saveTireData(planId, nextStint.id, {
-        tire_compound: cmp  || null,
-        tire_set:      set  || null,
+        tire_compound: cmp || null,
+        tire_set:      set || null,
         tire_age_laps: age !== '' ? parseInt(age) : null,
       });
     }
@@ -669,11 +703,12 @@ function renderExport(plan) {
     return;
   }
 
-  const c          = plan.config || {};
-  const stints     = plan.stints || [];
-  const fuelCap    = c.fuel_capacity_l || 70;
-  const lapTimeSec = c.lap_time_s || 90;
-  const fpl        = (c.fuel_per_lap_l || 3.5) * (MODE_MULT[c.fuel_mode] || 1);
+  const c             = plan.config || {};
+  const stints        = plan.stints || [];
+  const fuelCap       = c.fuel_capacity_l || 70;
+  const lapTimeSec    = c.lap_time_s || 90;
+  const fpl           = (c.fuel_per_lap_l || 3.5) * (MODE_MULT[c.fuel_mode] || 1);
+  const exportWearRate = c.tire_wear_rate_pct || 0;
   const lapsPerTank = Math.floor((fuelCap - fpl) / fpl);
   const totalLaps  = stints[stints.length - 1]?.end_lap || 0;
   const pitStops   = stints.filter(s => s.pit_lap).length;
@@ -713,7 +748,7 @@ function renderExport(plan) {
     <table class="stint-table">
       <thead>
         <tr>
-          <th>#</th><th>Driver</th><th>Tires</th><th>Start Lap</th><th>End Lap</th>
+          <th>#</th><th>Driver</th><th>Tires</th><th>Est. Wear</th><th>Actual Wear</th><th>Start Lap</th><th>End Lap</th>
           <th>Laps</th><th>Stint Time</th><th>Pit Lap</th><th>Fuel Load</th>
         </tr>
       </thead>
@@ -722,14 +757,20 @@ function renderExport(plan) {
           const laps     = s.end_lap - s.start_lap + 1;
           const stintSec = laps * lapTimeSec;
           const isLast   = !s.pit_lap;
-          const tireStr  = s.tire_compound
+          const tireStr   = s.tire_compound
             ? `${TIRE_LABELS[s.tire_compound] || s.tire_compound}${s.tire_set ? ' / ' + s.tire_set : ''}${s.tire_age_laps != null ? ' (' + s.tire_age_laps + ' laps)' : ''}`
             : '—';
+          const sLaps     = s.end_lap - s.start_lap + 1;
+          const sAge      = s.tire_age_laps != null ? s.tire_age_laps : 0;
+          const sEstWear  = exportWearRate > 0 ? Math.min(Math.round((sAge + sLaps) * exportWearRate), 100) + '%' : '—';
+          const sActWear  = s.tire_wear_pct != null ? fmt(s.tire_wear_pct, 0) + '%' : '—';
           return `
             <tr>
               <td>${s.stint_num}</td>
               <td><span class="driver-dot" style="background:${s.driver_color||'#4fc3f7'}"></span>${s.driver_name||'—'}</td>
               <td>${tireStr}</td>
+              <td>${sEstWear}</td>
+              <td>${sActWear}</td>
               <td>${s.start_lap}</td>
               <td>${s.end_lap}</td>
               <td>${laps}</td>
