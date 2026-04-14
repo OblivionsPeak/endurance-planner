@@ -415,15 +415,33 @@ def add_lap_time(plan_id):
     data = request.get_json()
     if 'lap_num' not in data or 'time_s' not in data:
         return jsonify({'error': 'lap_num and time_s required'}), 400
+
+    # Resolve driver_id from name if not supplied directly
+    driver_id = data.get('driver_id')
+    if not driver_id and data.get('driver_name'):
+        name = data['driver_name'].strip().lower()
+        row = db_exec(
+            "SELECT id FROM drivers WHERE plan_id=%s AND LOWER(name)=%s",
+            (plan_id, name)
+        ).fetchone()
+        if not row:
+            # Fuzzy: partial match
+            row = db_exec(
+                "SELECT id FROM drivers WHERE plan_id=%s AND LOWER(name) LIKE %s",
+                (plan_id, f'%{name}%')
+            ).fetchone()
+        if row:
+            driver_id = row['id']
+
     now    = datetime.utcnow().isoformat()
     lap_id = db_exec(
         """INSERT INTO lap_times (plan_id, lap_num, driver_id, time_s, note, logged_at)
            VALUES (%s, %s, %s, %s, %s, %s) RETURNING id""",
-        (plan_id, data['lap_num'], data.get('driver_id'),
+        (plan_id, data['lap_num'], driver_id,
          data['time_s'], data.get('note', ''), now)
     ).fetchone()['id']
     db_commit()
-    return jsonify({'id': lap_id}), 201
+    return jsonify({'id': lap_id, 'driver_id': driver_id}), 201
 
 
 @app.route('/api/plans/<int:plan_id>/laps/<int:lap_id>', methods=['DELETE'])
