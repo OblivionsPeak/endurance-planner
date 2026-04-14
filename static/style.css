@@ -98,6 +98,28 @@ header {
   font-size: 0.8rem;
   max-width: 180px;
 }
+.plan-id-badge {
+  font-size: 0.72rem;
+  font-family: var(--font-mono);
+  background: var(--blue-dim);
+  color: #7ab3f5;
+  border: 1px solid var(--blue);
+  border-radius: var(--radius);
+  padding: 0.15rem 0.5rem;
+  white-space: nowrap;
+  cursor: default;
+}
+.live-mode-header {
+  display: flex;
+  align-items: baseline;
+  gap: 1rem;
+  margin-bottom: 1.25rem;
+}
+.live-mode-header .section-title { margin-bottom: 0; }
+.telemetry-hint .plan-id-badge {
+  font-size: 0.8rem;
+  padding: 0.2rem 0.65rem;
+}
 
 /* ===== MAIN ===== */
 main {

@@ -106,6 +106,9 @@ async function loadPlan(id) {
   renderLapTimes(plan);
   renderExport(plan);
   $('#planSelect').value = id;
+  // Show plan ID badge in header and on live tab
+  const badge = `<span class="plan-id-badge" title="Use this ID in the Telemetry Agent">ID: ${plan.id}</span>`;
+  document.querySelectorAll('.plan-id-display').forEach(el => el.innerHTML = badge);
 }
 
 // ---------------------------------------------------------------------------

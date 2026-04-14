@@ -25,6 +25,7 @@
         <select id="planSelect">
           <option value="">— New Plan —</option>
         </select>
+        <span class="plan-id-display"></span>
         <button class="btn-ghost" id="deletePlanBtn" title="Delete plan">✕</button>
       </div>
     </div>
@@ -155,7 +156,10 @@
 
     <!-- ======= LIVE MODE TAB ======= -->
     <section id="tab-live" class="tab-section">
-      <h2 class="section-title">Live Race Mode</h2>
+      <div class="live-mode-header">
+        <h2 class="section-title">Live Race Mode</h2>
+        <div class="telemetry-hint plan-id-display"></div>
+      </div>
 
       <div class="live-grid">
         <div class="card live-status-card" id="liveStatusCard">
