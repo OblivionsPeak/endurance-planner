@@ -652,6 +652,125 @@ table.stint-table tr.last-stint td { opacity: 0.6; }
 .event-lap  { color: var(--blue); font-weight: 700; min-width: 50px; }
 .event-type { color: var(--yellow); min-width: 40px; }
 
+/* ===== LAPS TAB ===== */
+.lap-stats-bar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+  margin-bottom: 1.2rem;
+}
+
+.lap-stat-card {
+  background: var(--bg2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  padding: 0.9rem 1.1rem;
+  min-width: 155px;
+}
+
+.lap-stat-name {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  font-weight: 700;
+  font-size: 0.82rem;
+  margin-bottom: 0.6rem;
+  padding-bottom: 0.4rem;
+  border-bottom: 1px solid var(--border);
+}
+
+.lap-stat-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 0.2rem 0;
+  font-size: 0.8rem;
+  color: var(--text-dim);
+}
+.lap-stat-row strong {
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
+  font-family: var(--font-mono);
+}
+.text-gold { color: var(--yellow) !important; }
+
+.laps-grid {
+  display: grid;
+  grid-template-columns: 260px 1fr;
+  gap: 1rem;
+  align-items: start;
+}
+
+.lap-table-area {
+  background: var(--bg2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  overflow: hidden;
+}
+
+/* Lap time table rows */
+.lap-time-table .lap-num-cell {
+  font-variant-numeric: tabular-nums;
+  font-weight: 700;
+  color: var(--text-dim);
+  width: 48px;
+}
+.lap-time-table .lap-time-cell {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+  white-space: nowrap;
+}
+.lap-time-table .note-cell {
+  font-size: 0.75rem;
+  color: var(--text-dim);
+  max-width: 140px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* Best lap row — gold */
+.row-overall-best td { background: rgba(245,197,66,0.07) !important; }
+.row-overall-best .lap-time-cell { color: var(--yellow); }
+
+/* Personal best row — subtle green */
+.row-pb td { background: rgba(62,207,142,0.05) !important; }
+
+/* PB badge inline with time */
+.pb-tag {
+  display: inline-block;
+  font-size: 0.58rem;
+  font-weight: 700;
+  background: rgba(62,207,142,0.15);
+  border: 1px solid var(--green);
+  color: var(--green);
+  padding: 0 0.22rem;
+  border-radius: 2px;
+  margin-left: 4px;
+  vertical-align: middle;
+  letter-spacing: 0.05em;
+}
+
+/* Delta column colours */
+.delta-best  { color: var(--yellow); font-weight: 700; font-family: var(--font-mono); letter-spacing: 0.05em; }
+.delta-close { color: var(--green);  font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
+.delta-mid   { color: var(--text-dim); font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
+.delta-far   { color: var(--text-muted); font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
+
+.delete-lap-btn { font-size: 0.7rem; padding: 0.1rem 0.3rem; }
+.delete-lap-btn:hover { color: var(--red) !important; }
+
+.form-hint {
+  font-size: 0.72rem;
+  color: var(--text-muted);
+  margin-top: 0.6rem;
+}
+
+@media (max-width: 900px) {
+  .laps-grid { grid-template-columns: 1fr; }
+}
+
 /* ===== EXPORT ===== */
 .export-area {
   background: var(--bg2);

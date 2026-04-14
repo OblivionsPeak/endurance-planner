@@ -42,6 +42,12 @@ function secToMinSec(s) {
   return `${m}:${sec}`;
 }
 
+function secToMinSecFull(s) {
+  const m   = Math.floor(s / 60);
+  const sec = (s % 60).toFixed(3).padStart(6, '0');
+  return `${m}:${sec}`;
+}
+
 function hrsToHM(hrs) {
   const h = Math.floor(hrs);
   const m = Math.round((hrs - h) * 60);
@@ -62,6 +68,7 @@ function initTabs() {
       state.activeTab = tab;
       if (tab === 'stint'  && state.activePlan) renderStintTable(state.activePlan);
       if (tab === 'live'   && state.activePlan) renderLiveMode(state.activePlan);
+      if (tab === 'laps'   && state.activePlan) renderLapTimes(state.activePlan);
       if (tab === 'export' && state.activePlan) renderExport(state.activePlan);
     });
   });
@@ -96,6 +103,7 @@ async function loadPlan(id) {
   populateSetupForm(plan);
   renderStintTable(plan);
   renderLiveMode(plan);
+  renderLapTimes(plan);
   renderExport(plan);
   $('#planSelect').value = id;
 }
@@ -691,6 +699,186 @@ function renderEventLog(events) {
 }
 
 // ---------------------------------------------------------------------------
+// Lap Times
+// ---------------------------------------------------------------------------
+async function renderLapTimes(plan) {
+  if (!plan) return;
+
+  // Populate driver dropdown, preserving current selection
+  const dSel   = $('#lapDriver');
+  const prevId = dSel.value;
+  dSel.innerHTML = '<option value="">— Select driver —</option>';
+  (plan.drivers || []).forEach(d => dSel.add(new Option(d.name, d.id)));
+  if (prevId) dSel.value = prevId;
+
+  // Fetch recorded laps
+  const res  = await fetch(`/api/plans/${plan.id}/laps`);
+  if (!res.ok) return;
+  const laps = await res.json();
+
+  // Set lap number input to next expected lap
+  if (laps.length) {
+    const nextLap = Math.max(...laps.map(l => l.lap_num)) + 1;
+    $('#lapNum').value = nextLap;
+    autoSelectDriverForLap(plan.stints, nextLap, plan.drivers);
+  } else {
+    autoSelectDriverForLap(plan.stints, 1, plan.drivers);
+  }
+
+  renderLapStats(plan.drivers || [], laps);
+  renderLapTable(laps, plan.id);
+}
+
+function autoSelectDriverForLap(stints, lapNum, drivers) {
+  if (!stints || !lapNum || !drivers) return;
+  const stint = stints.find(s => lapNum >= s.start_lap && lapNum <= s.end_lap);
+  if (!stint) return;
+  const driver = drivers.find(d => d.name === stint.driver_name);
+  if (driver) $('#lapDriver').value = driver.id;
+}
+
+function renderLapStats(drivers, laps) {
+  const bar = $('#lapStatsBar');
+  if (!laps.length) { bar.innerHTML = ''; return; }
+
+  const overallBest = Math.min(...laps.map(l => l.time_s));
+
+  // Aggregate per driver
+  const stats = {};
+  drivers.forEach(d => { stats[d.id] = { ...d, times: [] }; });
+  laps.forEach(l => {
+    if (l.driver_id != null && stats[l.driver_id]) {
+      stats[l.driver_id].times.push(l.time_s);
+    }
+  });
+
+  bar.innerHTML = Object.values(stats)
+    .filter(d => d.times.length)
+    .map(d => {
+      const best   = Math.min(...d.times);
+      const avg    = d.times.reduce((a, b) => a + b, 0) / d.times.length;
+      const isAbsB = best === overallBest;
+      return `
+        <div class="lap-stat-card">
+          <div class="lap-stat-name">
+            <span class="driver-dot" style="background:${d.color}"></span>
+            ${d.name}
+          </div>
+          <div class="lap-stat-row"><span>Best</span><strong class="${isAbsB ? 'text-gold' : ''}">${secToMinSecFull(best)}</strong></div>
+          <div class="lap-stat-row"><span>Avg</span><strong>${secToMinSecFull(avg)}</strong></div>
+          <div class="lap-stat-row"><span>Laps</span><strong>${d.times.length}</strong></div>
+        </div>`;
+    }).join('');
+}
+
+function renderLapTable(laps, planId) {
+  const wrap = $('#lapTableWrap');
+  if (!laps.length) {
+    wrap.innerHTML = '<p class="empty-state" style="padding:1rem">No laps logged yet.</p>';
+    return;
+  }
+
+  const overallBest = Math.min(...laps.map(l => l.time_s));
+
+  // Personal bests per driver
+  const driverBests = {};
+  laps.forEach(l => {
+    if (l.driver_id == null) return;
+    if (!driverBests[l.driver_id] || l.time_s < driverBests[l.driver_id])
+      driverBests[l.driver_id] = l.time_s;
+  });
+
+  // Newest first
+  const sorted = [...laps].sort((a, b) => b.lap_num - a.lap_num);
+
+  let html = `
+    <div class="stint-table-wrap">
+    <table class="stint-table lap-time-table">
+      <thead>
+        <tr>
+          <th>Lap</th><th>Driver</th><th>Time</th>
+          <th>Δ Best</th><th>Note</th><th></th>
+        </tr>
+      </thead>
+      <tbody>
+  `;
+
+  sorted.forEach(l => {
+    const isOverall = l.time_s === overallBest;
+    const isPB      = l.driver_id != null && l.time_s === driverBests[l.driver_id];
+    const delta     = l.time_s - overallBest;
+    const deltaStr  = isOverall ? 'BEST' : `+${delta.toFixed(3)}`;
+    const deltaCls  = isOverall ? 'delta-best' : delta < 1 ? 'delta-close' : delta < 3 ? 'delta-mid' : 'delta-far';
+    const rowCls    = isOverall ? 'row-overall-best' : isPB ? 'row-pb' : '';
+    const pbTag     = isPB && !isOverall ? '<span class="pb-tag">PB</span>' : '';
+
+    html += `
+      <tr class="${rowCls}">
+        <td class="lap-num-cell">${l.lap_num}</td>
+        <td>
+          <span class="driver-dot" style="background:${l.driver_color || '#4fc3f7'}"></span>
+          ${l.driver_name || '—'}
+        </td>
+        <td class="lap-time-cell">${secToMinSecFull(l.time_s)}${pbTag}</td>
+        <td class="${deltaCls}">${deltaStr}</td>
+        <td class="note-cell">${l.note || ''}</td>
+        <td><button class="delete-lap-btn btn-ghost" data-id="${l.id}" title="Delete">✕</button></td>
+      </tr>`;
+  });
+
+  html += '</tbody></table></div>';
+  wrap.innerHTML = html;
+
+  $$('.delete-lap-btn', wrap).forEach(btn => {
+    btn.addEventListener('click', async () => {
+      if (!state.activePlan) return;
+      await fetch(`/api/plans/${state.activePlan.id}/laps/${btn.dataset.id}`, { method: 'DELETE' });
+      const r    = await fetch(`/api/plans/${state.activePlan.id}/laps`);
+      const laps = await r.json();
+      renderLapStats(state.activePlan.drivers || [], laps);
+      renderLapTable(laps, state.activePlan.id);
+    });
+  });
+}
+
+async function logLap() {
+  if (!state.activePlan) return;
+  const driverIdVal = $('#lapDriver').value;
+  const lapNum      = parseInt($('#lapNum').value);
+  const lapMin      = parseFloat($('#lapMin').value) || 0;
+  const lapSec      = parseFloat($('#lapSec').value) || 0;
+  const timeS       = lapMin * 60 + lapSec;
+  const note        = $('#lapNote').value.trim();
+
+  if (!lapNum || timeS <= 0) return;
+
+  await fetch(`/api/plans/${state.activePlan.id}/laps`, {
+    method:  'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body:    JSON.stringify({
+      lap_num:   lapNum,
+      driver_id: driverIdVal ? parseInt(driverIdVal) : null,
+      time_s:    timeS,
+      note,
+    }),
+  });
+
+  const nextLap = lapNum + 1;
+  $('#lapNum').value  = nextLap;
+  $('#lapSec').value  = '';
+  $('#lapNote').value = '';
+  autoSelectDriverForLap(state.activePlan.stints, nextLap, state.activePlan.drivers);
+
+  // Refresh only the stats + table, leave the form alone
+  const r    = await fetch(`/api/plans/${state.activePlan.id}/laps`);
+  const laps = await r.json();
+  renderLapStats(state.activePlan.drivers || [], laps);
+  renderLapTable(laps, state.activePlan.id);
+
+  $('#lapSec').focus();
+}
+
+// ---------------------------------------------------------------------------
 // Export
 // ---------------------------------------------------------------------------
 function renderExport(plan) {
@@ -784,6 +972,42 @@ function renderExport(plan) {
     </table>
   `;
 
+  // Lap time summary (fetched async, appended when ready)
+  fetch(`/api/plans/${plan.id}/laps`).then(r => r.json()).then(laps => {
+    if (!laps.length) return;
+    const overallBest = Math.min(...laps.map(l => l.time_s));
+    const bestLap     = laps.find(l => l.time_s === overallBest);
+    const stats = {};
+    (plan.drivers || []).forEach(d => { stats[d.id] = { ...d, times: [] }; });
+    laps.forEach(l => { if (l.driver_id != null && stats[l.driver_id]) stats[l.driver_id].times.push(l.time_s); });
+
+    let lapHtml = `
+      <div class="export-section-title">Lap Time Summary</div>
+      <table class="stint-table">
+        <thead><tr><th>Driver</th><th>Laps</th><th>Best</th><th>Average</th><th>Spread</th></tr></thead>
+        <tbody>
+          ${Object.values(stats).filter(d => d.times.length).map(d => {
+            const best   = Math.min(...d.times);
+            const avg    = d.times.reduce((a, b) => a + b, 0) / d.times.length;
+            const spread = Math.max(...d.times) - Math.min(...d.times);
+            return `<tr>
+              <td><span class="driver-dot" style="background:${d.color}"></span>${d.name}</td>
+              <td>${d.times.length}</td>
+              <td>${secToMinSecFull(best)}</td>
+              <td>${secToMinSecFull(avg)}</td>
+              <td>+${spread.toFixed(3)}s</td>
+            </tr>`;
+          }).join('')}
+        </tbody>
+      </table>
+      <p style="font-size:0.78rem;color:var(--text-dim);margin-top:0.5rem">
+        Overall fastest: <strong>${secToMinSecFull(overallBest)}</strong>
+        — ${bestLap.driver_name || '—'}, Lap ${bestLap.lap_num}
+      </p>
+    `;
+    exportEl.innerHTML += lapHtml;
+  });
+
   if (plan.events?.length) {
     html += `
       <div class="export-section-title">Race Events</div>
@@ -870,6 +1094,19 @@ function initEvents() {
     if (!state.activePlan) return;
     updateLiveStatus();
   });
+
+  // Laps tab
+  $('#lapNum').addEventListener('input', () => {
+    if (state.activePlan) {
+      autoSelectDriverForLap(
+        state.activePlan.stints,
+        parseInt($('#lapNum').value),
+        state.activePlan.drivers
+      );
+    }
+  });
+  $('#lapSec').addEventListener('keydown', e => { if (e.key === 'Enter') logLap(); });
+  $('#logLapBtn').addEventListener('click', logLap);
 
   // Log event
   $('#logEventBtn').addEventListener('click', async () => {

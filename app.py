@@ -93,6 +93,17 @@ def init_db():
     cur.execute("ALTER TABLE stints ADD COLUMN IF NOT EXISTS tire_set TEXT")
     cur.execute("ALTER TABLE stints ADD COLUMN IF NOT EXISTS tire_age_laps INTEGER")
     cur.execute("ALTER TABLE stints ADD COLUMN IF NOT EXISTS tire_wear_pct FLOAT")
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS lap_times (
+            id          SERIAL PRIMARY KEY,
+            plan_id     INTEGER NOT NULL REFERENCES race_plans(id) ON DELETE CASCADE,
+            lap_num     INTEGER NOT NULL,
+            driver_id   INTEGER REFERENCES drivers(id),
+            time_s      FLOAT NOT NULL,
+            note        TEXT,
+            logged_at   TEXT NOT NULL
+        )
+    """)
     conn.commit()
     cur.close()
     conn.close()
@@ -380,6 +391,44 @@ def complete_stint(plan_id, stint_id):
         "UPDATE stints SET is_complete=1, actual_end_lap=%s WHERE id=%s AND plan_id=%s",
         (actual_end, stint_id, plan_id)
     )
+    db_commit()
+    return jsonify({'ok': True})
+
+
+@app.route('/api/plans/<int:plan_id>/laps', methods=['GET'])
+def get_lap_times(plan_id):
+    rows = db_exec(
+        """SELECT lt.id, lt.lap_num, lt.time_s, lt.note, lt.logged_at,
+                  lt.driver_id,
+                  d.name AS driver_name, d.color AS driver_color
+           FROM lap_times lt
+           LEFT JOIN drivers d ON lt.driver_id = d.id
+           WHERE lt.plan_id=%s
+           ORDER BY lt.lap_num ASC, lt.logged_at ASC""",
+        (plan_id,)
+    ).fetchall()
+    return jsonify([dict(r) for r in rows])
+
+
+@app.route('/api/plans/<int:plan_id>/laps', methods=['POST'])
+def add_lap_time(plan_id):
+    data = request.get_json()
+    if 'lap_num' not in data or 'time_s' not in data:
+        return jsonify({'error': 'lap_num and time_s required'}), 400
+    now    = datetime.utcnow().isoformat()
+    lap_id = db_exec(
+        """INSERT INTO lap_times (plan_id, lap_num, driver_id, time_s, note, logged_at)
+           VALUES (%s, %s, %s, %s, %s, %s) RETURNING id""",
+        (plan_id, data['lap_num'], data.get('driver_id'),
+         data['time_s'], data.get('note', ''), now)
+    ).fetchone()['id']
+    db_commit()
+    return jsonify({'id': lap_id}), 201
+
+
+@app.route('/api/plans/<int:plan_id>/laps/<int:lap_id>', methods=['DELETE'])
+def delete_lap_time(plan_id, lap_id):
+    db_exec("DELETE FROM lap_times WHERE id=%s AND plan_id=%s", (lap_id, plan_id))
     db_commit()
     return jsonify({'ok': True})
 
