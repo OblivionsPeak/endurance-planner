@@ -378,12 +378,18 @@ function renderStintTable(plan) {
       ? `<span style="color:${wearColor};font-weight:600">${estWear}%</span> <span class="wear-label">est</span>${actualWear}`
       : (s.tire_wear_pct != null ? `${fmt(s.tire_wear_pct, 0)}%` : '<span style="color:var(--text-muted)">—</span>');
 
+    const driverOpts = (plan.drivers || []).map(d =>
+      `<option value="${d.id}" ${d.id === s.driver_id ? 'selected' : ''}>${d.name}</option>`
+    ).join('');
+
     html += `
       <tr class="${isLast ? 'last-stint' : ''}">
         <td>${s.stint_num}</td>
-        <td>
-          <span class="driver-dot" style="background:${dotColor}"></span>
-          ${s.driver_name || '—'}
+        <td class="driver-cell">
+          <span class="driver-dot" style="background:${dotColor}" data-stint-id="${s.id}"></span>
+          <select class="driver-sel" data-stint-id="${s.id}">
+            ${driverOpts}
+          </select>
         </td>
         <td class="tire-cell">
           <div class="tire-inputs">
@@ -425,6 +431,35 @@ function renderStintTable(plan) {
         tire_set:       set || null,
         tire_age_laps:  age,
       });
+    });
+  });
+
+  // Driver assignment — change dropdown to reassign a stint to any driver
+  $$('.driver-sel', wrap).forEach(sel => {
+    sel.addEventListener('change', async () => {
+      const sid      = parseInt(sel.dataset.stintId);
+      const driverId = parseInt(sel.value);
+      const driver   = (plan.drivers || []).find(d => d.id === driverId);
+
+      // Optimistic update: swap dot color immediately
+      const dot = wrap.querySelector(`.driver-dot[data-stint-id="${sid}"]`);
+      if (dot && driver) dot.style.background = driver.color;
+
+      await fetch(`/api/plans/${plan.id}/stints/${sid}`, {
+        method:  'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body:    JSON.stringify({ driver_id: driverId }),
+      });
+
+      // Update local state so timeline re-render is accurate
+      const stint = (state.activePlan?.stints || []).find(s => s.id === sid);
+      if (stint && driver) {
+        stint.driver_id    = driverId;
+        stint.driver_name  = driver.name;
+        stint.driver_color = driver.color;
+      }
+
+      renderTimeline(state.activePlan);
     });
   });
 

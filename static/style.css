@@ -387,7 +387,25 @@ table.stint-table tr.last-stint td { opacity: 0.6; }
   border-radius: 50%;
   margin-right: 6px;
   vertical-align: middle;
+  flex-shrink: 0;
 }
+.driver-cell {
+  display: flex;
+  align-items: center;
+  white-space: nowrap;
+}
+.driver-sel {
+  background: transparent;
+  border: 1px solid var(--border);
+  color: var(--text);
+  border-radius: var(--radius);
+  padding: 0.2rem 0.4rem;
+  font-size: 0.8rem;
+  cursor: pointer;
+  max-width: 130px;
+}
+.driver-sel:hover  { border-color: var(--border-hl); }
+.driver-sel:focus  { outline: none; border-color: var(--accent); }
 
 .pit-badge {
   display: inline-block;
