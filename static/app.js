@@ -488,7 +488,6 @@ function renderStintTable(plan) {
   });
 
   // Driver minimum time warnings
-  const lapTimeSec  = config.lap_time_s || 90;
   const driverHours = {};
   (plan.drivers || []).forEach(d => { driverHours[d.id] = 0; });
   stints.forEach(s => {
