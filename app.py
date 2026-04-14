@@ -489,9 +489,9 @@ def live_status(plan_id):
     plan_row   = db_exec("SELECT config FROM race_plans WHERE id=%s", (plan_id,)).fetchone()
     config     = json.loads(plan_row['config'])
     lap_time_s    = config.get('lap_time_s', 90)
-    fuel_per_lap  = config.get('fuel_per_lap_l', 3.5)
+    fuel_per_lap  = config.get('fuel_per_lap_l', 0.92)
     fuel_mode     = config.get('fuel_mode', 'normal')
-    fuel_capacity = config.get('fuel_capacity_l', 70)
+    fuel_capacity = config.get('fuel_capacity_l', 18)
     effective_fpl = fuel_per_lap * FUEL_MODE_MULTIPLIERS.get(fuel_mode, 1.0)
 
     mins_until_pit = round(laps_until_pit * lap_time_s / 60, 1)

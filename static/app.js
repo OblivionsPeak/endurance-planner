@@ -24,23 +24,23 @@ const TIRE_OPTS = Object.entries(TIRE_LABELS)
 // Car presets: tank capacity (L) and typical fuel per lap (L) as a starting point.
 // fpl values are approximate mid-range track estimates — always verify for your circuit.
 const CAR_PRESETS = {
-  gtp_porsche:   { tank: 75,  fpl: 3.5 },
-  gtp_bmw:       { tank: 75,  fpl: 3.4 },
-  gtp_cadillac:  { tank: 75,  fpl: 3.5 },
-  gtp_acura:     { tank: 75,  fpl: 3.4 },
-  lmp2:          { tank: 75,  fpl: 3.0 },
-  lmp3:          { tank: 55,  fpl: 2.4 },
-  gte_ferrari:   { tank: 90,  fpl: 3.9 },
-  gte_porsche:   { tank: 90,  fpl: 3.8 },
-  gt3_bmw:       { tank: 100, fpl: 4.1 },
-  gt3_ferrari:   { tank: 100, fpl: 3.9 },
-  gt3_porsche:   { tank: 100, fpl: 3.8 },
-  gt3_lambo:     { tank: 100, fpl: 4.0 },
-  gt3_mclaren:   { tank: 100, fpl: 3.9 },
-  gt3_mercedes:  { tank: 100, fpl: 4.0 },
-  gt4:           { tank: 65,  fpl: 2.8 },
-  mx5:           { tank: 45,  fpl: 1.9 },
-  ir18:          { tank: 70,  fpl: 2.5 },
+  gtp_porsche:   { tank: 19.8, fpl: 0.92 },
+  gtp_bmw:       { tank: 19.8, fpl: 0.90 },
+  gtp_cadillac:  { tank: 19.8, fpl: 0.92 },
+  gtp_acura:     { tank: 19.8, fpl: 0.90 },
+  lmp2:          { tank: 19.8, fpl: 0.79 },
+  lmp3:          { tank: 14.5, fpl: 0.63 },
+  gte_ferrari:   { tank: 23.8, fpl: 1.03 },
+  gte_porsche:   { tank: 23.8, fpl: 1.00 },
+  gt3_bmw:       { tank: 26.4, fpl: 1.08 },
+  gt3_ferrari:   { tank: 26.4, fpl: 1.03 },
+  gt3_porsche:   { tank: 26.4, fpl: 1.00 },
+  gt3_lambo:     { tank: 26.4, fpl: 1.06 },
+  gt3_mclaren:   { tank: 26.4, fpl: 1.03 },
+  gt3_mercedes:  { tank: 26.4, fpl: 1.06 },
+  gt4:           { tank: 17.2, fpl: 0.74 },
+  mx5:           { tank: 11.9, fpl: 0.50 },
+  ir18:          { tank: 18.5, fpl: 0.66 },
 };
 
 // ---------------------------------------------------------------------------
@@ -151,8 +151,8 @@ function populateSetupForm(plan) {
   $('#lapTimeSec').value    = (lapSec % 60).toFixed(1);
   $('#pitLoss').value       = c.pit_loss_s || 35;
   $('#maxContinuousHrs').value = c.max_continuous_hrs || 2.5;
-  $('#fuelCapacity').value  = c.fuel_capacity_l || 70;
-  $('#fuelPerLap').value    = c.fuel_per_lap_l || 3.5;
+  $('#fuelCapacity').value  = c.fuel_capacity_l || 18;
+  $('#fuelPerLap').value    = c.fuel_per_lap_l || 0.92;
   $('#tireWearRate').value  = c.tire_wear_rate_pct ?? 0;
 
   state.fuelMode = c.fuel_mode || 'normal';
@@ -171,8 +171,8 @@ function buildConfig() {
     lap_time_s:         getLapTimeSec(),
     pit_loss_s:         parseFloat($('#pitLoss').value)       || 35,
     max_continuous_hrs: parseFloat($('#maxContinuousHrs').value) || 2.5,
-    fuel_capacity_l:    parseFloat($('#fuelCapacity').value)  || 70,
-    fuel_per_lap_l:     parseFloat($('#fuelPerLap').value)    || 3.5,
+    fuel_capacity_l:    parseFloat($('#fuelCapacity').value)  || 18,
+    fuel_per_lap_l:     parseFloat($('#fuelPerLap').value)    || 0.92,
     fuel_mode:          state.fuelMode,
     tire_wear_rate_pct: parseFloat($('#tireWearRate').value) || 0,
   };
@@ -242,8 +242,8 @@ function addDriverRow(driver = null) {
 // Live fuel preview (client-side math, mirrors server)
 // ---------------------------------------------------------------------------
 function updateFuelPreview() {
-  const cap    = parseFloat($('#fuelCapacity').value) || 70;
-  const fpl    = parseFloat($('#fuelPerLap').value)   || 3.5;
+  const cap    = parseFloat($('#fuelCapacity').value) || 18;
+  const fpl    = parseFloat($('#fuelPerLap').value)   || 0.92;
   const mult   = MODE_MULT[state.fuelMode] || 1;
   const effFpl = fpl * mult;
   const usable = cap - effFpl;                        // 1-lap safety buffer
@@ -253,7 +253,7 @@ function updateFuelPreview() {
 
   $('#previewLaps').textContent       = laps > 0 ? laps : '—';
   $('#previewStintTime').textContent  = laps > 0 ? hrsToHM(stintSec / 3600) : '—';
-  $('#previewFpl').textContent        = `${fmt(effFpl, 3)} L`;
+  $('#previewFpl').textContent        = `${fmt(effFpl, 3)} gal`;
 }
 
 // ---------------------------------------------------------------------------
@@ -340,7 +340,7 @@ function renderStintTable(plan) {
   }
 
   const config       = plan.config || {};
-  const fuelCap      = config.fuel_capacity_l || 70;
+  const fuelCap      = config.fuel_capacity_l || 18;
   const lapTimeSec   = config.lap_time_s || 90;
   const totalLaps    = stints[stints.length - 1]?.end_lap || 1;
   const wearRate     = config.tire_wear_rate_pct || 0;
@@ -428,7 +428,7 @@ function renderStintTable(plan) {
         <td>${laps}</td>
         <td>${hrsToHM(stintSec / 3600)}</td>
         <td>${pitCell}</td>
-        <td>${fmt(s.fuel_load, 1)} L</td>
+        <td>${fmt(s.fuel_load, 1)} gal</td>
         <td class="fuel-bar-cell">
           <div class="fuel-bar">
             <div class="fuel-bar-fill" style="width:${fuelPct}%"></div>
@@ -806,7 +806,7 @@ async function updateLiveStatus() {
       <div class="live-stat-divider"></div>
       <div class="live-stat-row">
         <span class="live-stat-label">Est. Fuel</span>
-        <span class="live-stat-val" style="color:${fuelBarColor}">${data.fuel_remaining_l} L</span>
+        <span class="live-stat-val" style="color:${fuelBarColor}">${data.fuel_remaining_l} gal</span>
       </div>
       <div class="fuel-mini-bar">
         <div class="fuel-mini-fill" style="width:${fuelPct}%;background:${fuelBarColor}"></div>
@@ -842,7 +842,7 @@ function updatePitWall(data) {
   const laps2pit = data.laps_until_pit;
   $('#pwStintNum').textContent   = `STINT #${s.stint_num}`;
   $('#pwDriver').textContent     = s.driver_name || '—';
-  $('#pwFuel').textContent       = `${data.fuel_remaining_l} L`;
+  $('#pwFuel').textContent       = `${data.fuel_remaining_l} gal`;
   $('#pwFuelLaps').textContent   = String(data.laps_of_fuel);
   $('#pwNextDriver').textContent = data.next_stint?.driver_name || 'FINISH';
 
@@ -1064,9 +1064,9 @@ function renderExport(plan) {
 
   const c             = plan.config || {};
   const stints        = plan.stints || [];
-  const fuelCap       = c.fuel_capacity_l || 70;
+  const fuelCap       = c.fuel_capacity_l || 18;
   const lapTimeSec    = c.lap_time_s || 90;
-  const fpl           = (c.fuel_per_lap_l || 3.5) * (MODE_MULT[c.fuel_mode] || 1);
+  const fpl           = (c.fuel_per_lap_l || 0.92) * (MODE_MULT[c.fuel_mode] || 1);
   const exportWearRate = c.tire_wear_rate_pct || 0;
   const lapsPerTank = Math.floor((fuelCap - fpl) / fpl);
   const totalLaps  = stints[stints.length - 1]?.end_lap || 0;
@@ -1086,8 +1086,8 @@ function renderExport(plan) {
       <div class="export-meta-cell"><span class="val">${pitStops}</span><span class="lbl">Pit Stops</span></div>
       <div class="export-meta-cell"><span class="val">${lapsPerTank}</span><span class="lbl">Laps / Tank</span></div>
       <div class="export-meta-cell"><span class="val">${secToMinSec(lapTimeSec)}</span><span class="lbl">Target Lap Time</span></div>
-      <div class="export-meta-cell"><span class="val">${fmt(fpl, 3)}L</span><span class="lbl">Fuel/Lap</span></div>
-      <div class="export-meta-cell"><span class="val">${fuelCap}L</span><span class="lbl">Tank Capacity</span></div>
+      <div class="export-meta-cell"><span class="val">${fmt(fpl, 3)} gal</span><span class="lbl">Fuel/Lap</span></div>
+      <div class="export-meta-cell"><span class="val">${fuelCap} gal</span><span class="lbl">Tank Capacity</span></div>
     </div>
 
     <div class="export-section-title">Drivers</div>
@@ -1135,7 +1135,7 @@ function renderExport(plan) {
               <td>${laps}</td>
               <td>${hrsToHM(stintSec/3600)}</td>
               <td>${isLast ? '— FINISH —' : `Lap ${s.pit_lap}`}</td>
-              <td>${fmt(s.fuel_load,1)} L</td>
+              <td>${fmt(s.fuel_load,1)} gal</td>
             </tr>
           `;
         }).join('')}
