@@ -88,6 +88,10 @@ def init_db():
             created_at  TEXT NOT NULL
         )
     """)
+    # Tire data columns (added in migration — safe to run on existing DBs)
+    cur.execute("ALTER TABLE stints ADD COLUMN IF NOT EXISTS tire_compound TEXT")
+    cur.execute("ALTER TABLE stints ADD COLUMN IF NOT EXISTS tire_set TEXT")
+    cur.execute("ALTER TABLE stints ADD COLUMN IF NOT EXISTS tire_age_laps INTEGER")
     conn.commit()
     cur.close()
     conn.close()
@@ -343,6 +347,30 @@ def recalculate(plan_id):
 # Routes — API: live mode
 # ---------------------------------------------------------------------------
 
+@app.route('/api/plans/<int:plan_id>/stints/<int:stint_id>', methods=['PATCH'])
+def patch_stint(plan_id, stint_id):
+    """Update tire data (and optionally completion state) for a single stint."""
+    data    = request.get_json() or {}
+    allowed = ('tire_compound', 'tire_set', 'tire_age_laps', 'is_complete', 'actual_end_lap')
+    fields  = []
+    values  = []
+    for key in allowed:
+        if key in data:
+            fields.append(f"{key}=%s")
+            val = data[key]
+            # treat empty string as NULL
+            values.append(None if val == '' else val)
+    if not fields:
+        return jsonify({'ok': True})
+    values.extend([stint_id, plan_id])
+    db_exec(
+        f"UPDATE stints SET {', '.join(fields)} WHERE id=%s AND plan_id=%s",
+        tuple(values)
+    )
+    db_commit()
+    return jsonify({'ok': True})
+
+
 @app.route('/api/plans/<int:plan_id>/stints/<int:stint_id>/complete', methods=['POST'])
 def complete_stint(plan_id, stint_id):
     data       = request.get_json() or {}
@@ -449,6 +477,7 @@ def _get_stints(plan_id):
     return db_exec(
         """SELECT s.id, s.stint_num, s.start_lap, s.end_lap, s.pit_lap,
                   s.fuel_load, s.fuel_mode, s.is_complete, s.actual_end_lap,
+                  s.tire_compound, s.tire_set, s.tire_age_laps,
                   d.name AS driver_name, d.color AS driver_color
            FROM stints s
            LEFT JOIN drivers d ON s.driver_id = d.id

@@ -404,6 +404,71 @@ table.stint-table tr.last-stint td { opacity: 0.6; }
   transition: width 0.3s;
 }
 
+/* ===== TIRE CELL (stint table) ===== */
+.tire-cell { min-width: 148px; }
+.tire-inputs {
+  display: flex;
+  align-items: center;
+  gap: 3px;
+}
+.tire-inputs select,
+.tire-inputs input {
+  padding: 0.18rem 0.28rem;
+  font-size: 0.73rem;
+  width: auto;
+  min-width: 0;
+}
+.tire-inputs select    { width: 58px; }
+.tire-inputs .tire-set-inp { width: 40px; }
+.tire-inputs .tire-age-inp { width: 40px; }
+
+/* ===== TIRE BADGES ===== */
+.tire-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  font-size: 0.65rem;
+  font-weight: 700;
+  padding: 0.1rem 0.35rem;
+  border-radius: 3px;
+  letter-spacing: 0.04em;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+.tire-set-lbl { font-weight: 400; opacity: 0.85; }
+.tire-badge-s { background: rgba(200,25,46,0.18);   color: #f77;    border: 1px solid #c8192e; }
+.tire-badge-m { background: rgba(245,197,66,0.18);  color: #f5c542; border: 1px solid #f5c542; }
+.tire-badge-h { background: rgba(237,241,255,0.14); color: #c8d6f0; border: 1px solid #6e85b0; }
+.tire-badge-i { background: rgba(62,207,142,0.18);  color: #3ecf8e; border: 1px solid #3ecf8e; }
+.tire-badge-w { background: rgba(59,114,212,0.18);  color: #6b9fe4; border: 1px solid #3b72d4; }
+
+/* ===== TIRE PROMPT (live mode) ===== */
+.tire-prompt {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.35rem;
+  padding: 0.55rem 0.75rem;
+  background: rgba(59,114,212,0.1);
+  border: 1px solid var(--blue);
+  border-radius: var(--radius);
+  margin-top: 0.3rem;
+  font-size: 0.78rem;
+}
+.tp-label { color: var(--text-dim); font-size: 0.72rem; }
+.tire-prompt select,
+.tire-prompt input {
+  padding: 0.2rem 0.3rem;
+  font-size: 0.75rem;
+  width: auto;
+  min-width: 0;
+}
+.tire-prompt select  { width: 60px; }
+.tire-prompt .tp-set { width: 42px; }
+.tire-prompt .tp-age { width: 46px; }
+.tire-prompt .tp-confirm { padding: 0.25rem 0.6rem; font-size: 0.72rem; }
+.tire-prompt .tp-skip    { padding: 0.2rem 0.4rem;  font-size: 0.72rem; }
+
 /* ===== TIMELINE ===== */
 .timeline-wrap {
   margin-top: 1.5rem;

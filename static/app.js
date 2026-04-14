@@ -17,6 +17,10 @@ const state = {
 const COLORS = ['#4fc3f7','#81c784','#ffb74d','#f06292','#ce93d8','#80deea','#ffcc02','#ff8a65'];
 const MODE_MULT = { save: 0.92, normal: 1.0, push: 1.08 };
 
+const TIRE_LABELS = { S: 'Soft', M: 'Med', H: 'Hard', I: 'Inter', W: 'Wet' };
+const TIRE_OPTS = Object.entries(TIRE_LABELS)
+  .map(([v, l]) => `<option value="${v}">${l}</option>`).join('');
+
 // ---------------------------------------------------------------------------
 // DOM helpers
 // ---------------------------------------------------------------------------
@@ -145,6 +149,31 @@ function buildDrivers() {
     max_hours: parseFloat($('.driver-maxhrs', row).value) || 2.5,
     color:     $('.driver-color', row).value,
   }));
+}
+
+// ---------------------------------------------------------------------------
+// Tire data helpers
+// ---------------------------------------------------------------------------
+async function saveTireData(planId, stintId, data) {
+  await fetch(`/api/plans/${planId}/stints/${stintId}`, {
+    method:  'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body:    JSON.stringify(data),
+  });
+}
+
+function tireBadgeHtml(compound, set) {
+  if (!compound) return '';
+  const cls  = `tire-badge tire-badge-${compound.toLowerCase()}`;
+  const label = set ? `${compound} <span class="tire-set-lbl">${set}</span>` : compound;
+  return `<span class="${cls}">${label}</span>`;
+}
+
+function tireSelectHtml(stintId, current) {
+  const opts = `<option value="">—</option>${TIRE_OPTS}`;
+  const sel  = `<select class="tire-cmp" data-stint-id="${stintId}">${opts}</select>`;
+  // We set value via JS after insertion; return the markup with current baked in
+  return sel.replace(`value="${current}"`, `value="${current}" selected`);
 }
 
 // ---------------------------------------------------------------------------
@@ -298,6 +327,7 @@ function renderStintTable(plan) {
         <tr>
           <th>#</th>
           <th>Driver</th>
+          <th>Tires</th>
           <th>Start Lap</th>
           <th>End Lap</th>
           <th>Laps</th>
@@ -320,12 +350,23 @@ function renderStintTable(plan) {
       ? '<span class="no-pit-badge">FINISH</span>'
       : `<span class="pit-badge">Lap ${s.pit_lap}</span>`;
 
+    const cmpSel  = tireSelectHtml(s.id, s.tire_compound || '');
+    const ageVal  = s.tire_age_laps != null ? s.tire_age_laps : '';
+    const setVal  = s.tire_set || '';
+
     html += `
       <tr class="${isLast ? 'last-stint' : ''}">
         <td>${s.stint_num}</td>
         <td>
           <span class="driver-dot" style="background:${dotColor}"></span>
           ${s.driver_name || '—'}
+        </td>
+        <td class="tire-cell">
+          <div class="tire-inputs">
+            ${cmpSel}
+            <input type="text"   class="tire-set-inp" data-stint-id="${s.id}" value="${setVal}"  placeholder="Set#" maxlength="6" title="Set number" />
+            <input type="number" class="tire-age-inp" data-stint-id="${s.id}" value="${ageVal}" placeholder="Age"  min="0" max="999" title="Laps already on tires" />
+          </div>
         </td>
         <td>${s.start_lap}</td>
         <td>${s.end_lap}</td>
@@ -345,6 +386,22 @@ function renderStintTable(plan) {
 
   html += '</tbody></table></div>';
   wrap.innerHTML = html;
+
+  // Auto-save tire data when any tire field changes
+  $$('.tire-cmp, .tire-set-inp, .tire-age-inp', wrap).forEach(el => {
+    el.addEventListener('change', () => {
+      const sid    = el.dataset.stintId;
+      const cmp    = wrap.querySelector(`.tire-cmp[data-stint-id="${sid}"]`)?.value || null;
+      const set    = wrap.querySelector(`.tire-set-inp[data-stint-id="${sid}"]`)?.value.trim() || null;
+      const ageEl  = wrap.querySelector(`.tire-age-inp[data-stint-id="${sid}"]`);
+      const age    = ageEl && ageEl.value !== '' ? parseInt(ageEl.value) : null;
+      saveTireData(plan.id, sid, {
+        tire_compound:  cmp || null,
+        tire_set:       set || null,
+        tire_age_laps:  age,
+      });
+    });
+  });
 
   renderTimeline(plan);
 }
@@ -421,20 +478,22 @@ function renderLiveMode(plan) {
   }
 
   listEl.innerHTML = '';
-  stints.forEach(s => {
+  stints.forEach((s, idx) => {
     const item = document.createElement('div');
     item.className = 'live-stint-item' + (s.is_complete ? ' is-complete' : '');
     item.dataset.stintId  = s.id;
     item.dataset.startLap = s.start_lap;
     item.dataset.endLap   = s.end_lap;
 
-    const color = s.driver_color || '#4fc3f7';
+    const color    = s.driver_color || '#4fc3f7';
+    const tireBadge = tireBadgeHtml(s.tire_compound, s.tire_set);
     item.innerHTML = `
       <span class="stint-num">#${s.stint_num}</span>
       <span class="driver-dot" style="background:${color}"></span>
       <span class="stint-driver">${s.driver_name || '—'}</span>
+      ${tireBadge}
       <span class="stint-laps">${s.start_lap}–${s.end_lap}</span>
-      ${!s.is_complete ? `<button class="complete-btn" data-id="${s.id}">✓ Done</button>` : '<span style="font-size:0.7rem;color:var(--green)">Done</span>'}
+      ${!s.is_complete ? `<button class="complete-btn" data-id="${s.id}" data-idx="${idx}">✓ Done</button>` : '<span style="font-size:0.7rem;color:var(--green)">Done</span>'}
     `;
     listEl.appendChild(item);
   });
@@ -443,16 +502,15 @@ function renderLiveMode(plan) {
   $$('.complete-btn').forEach(btn => {
     btn.addEventListener('click', async (e) => {
       e.stopPropagation();
-      const stintId  = btn.dataset.id;
-      const curLap   = parseInt($('#currentLap').value) || 1;
-      await fetch(`/api/plans/${plan.id}/stints/${stintId}/complete`, {
-        method:  'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body:    JSON.stringify({ actual_end_lap: curLap }),
-      });
-      const updated = await (await fetch(`/api/plans/${plan.id}`)).json();
-      state.activePlan = updated;
-      renderLiveMode(updated);
+      const stintId   = parseInt(btn.dataset.id);
+      const stintIdx  = parseInt(btn.dataset.idx);
+      const nextStint = stints[stintIdx + 1] || null;
+
+      if (nextStint && !nextStint.is_complete) {
+        showTirePrompt(btn, plan.id, stintId, nextStint);
+      } else {
+        await completStintNow(plan.id, stintId);
+      }
     });
   });
 
@@ -461,6 +519,62 @@ function renderLiveMode(plan) {
 
   // update live status for current lap
   updateLiveStatus();
+}
+
+async function completStintNow(planId, stintId) {
+  const curLap = parseInt($('#currentLap').value) || 1;
+  await fetch(`/api/plans/${planId}/stints/${stintId}/complete`, {
+    method:  'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body:    JSON.stringify({ actual_end_lap: curLap }),
+  });
+  const updated = await (await fetch(`/api/plans/${planId}`)).json();
+  state.activePlan = updated;
+  renderLiveMode(updated);
+}
+
+function showTirePrompt(btn, planId, currentStintId, nextStint) {
+  const existing = {
+    cmp: nextStint.tire_compound || '',
+    set: nextStint.tire_set      || '',
+    age: nextStint.tire_age_laps != null ? nextStint.tire_age_laps : '',
+  };
+
+  const promptEl = document.createElement('div');
+  promptEl.className = 'tire-prompt';
+  promptEl.innerHTML = `
+    <span class="tp-label">Next tires (Stint #${nextStint.stint_num}):</span>
+    <select class="tp-cmp">
+      <option value="">—</option>
+      ${TIRE_OPTS}
+    </select>
+    <input type="text"   class="tp-set" value="${existing.set}" placeholder="Set#" maxlength="6" />
+    <input type="number" class="tp-age" value="${existing.age}" placeholder="Age"  min="0" max="999" />
+    <button class="tp-confirm btn-primary">✓ Confirm</button>
+    <button class="tp-skip btn-ghost">Skip</button>
+  `;
+
+  btn.replaceWith(promptEl);
+
+  // pre-select existing compound
+  promptEl.querySelector('.tp-cmp').value = existing.cmp;
+
+  async function finish(saveTires) {
+    if (saveTires) {
+      const cmp = promptEl.querySelector('.tp-cmp').value;
+      const set = promptEl.querySelector('.tp-set').value.trim();
+      const age = promptEl.querySelector('.tp-age').value;
+      await saveTireData(planId, nextStint.id, {
+        tire_compound: cmp  || null,
+        tire_set:      set  || null,
+        tire_age_laps: age !== '' ? parseInt(age) : null,
+      });
+    }
+    await completStintNow(planId, currentStintId);
+  }
+
+  promptEl.querySelector('.tp-confirm').addEventListener('click', () => finish(true));
+  promptEl.querySelector('.tp-skip').addEventListener('click',    () => finish(false));
 }
 
 async function updateLiveStatus() {
@@ -599,7 +713,7 @@ function renderExport(plan) {
     <table class="stint-table">
       <thead>
         <tr>
-          <th>#</th><th>Driver</th><th>Start Lap</th><th>End Lap</th>
+          <th>#</th><th>Driver</th><th>Tires</th><th>Start Lap</th><th>End Lap</th>
           <th>Laps</th><th>Stint Time</th><th>Pit Lap</th><th>Fuel Load</th>
         </tr>
       </thead>
@@ -608,10 +722,14 @@ function renderExport(plan) {
           const laps     = s.end_lap - s.start_lap + 1;
           const stintSec = laps * lapTimeSec;
           const isLast   = !s.pit_lap;
+          const tireStr  = s.tire_compound
+            ? `${TIRE_LABELS[s.tire_compound] || s.tire_compound}${s.tire_set ? ' / ' + s.tire_set : ''}${s.tire_age_laps != null ? ' (' + s.tire_age_laps + ' laps)' : ''}`
+            : '—';
           return `
             <tr>
               <td>${s.stint_num}</td>
               <td><span class="driver-dot" style="background:${s.driver_color||'#4fc3f7'}"></span>${s.driver_name||'—'}</td>
+              <td>${tireStr}</td>
               <td>${s.start_lap}</td>
               <td>${s.end_lap}</td>
               <td>${laps}</td>
