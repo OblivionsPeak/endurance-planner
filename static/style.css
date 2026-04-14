@@ -315,8 +315,9 @@ input[type="color"] {
   gap: 0.5rem;
   margin-bottom: 0.6rem;
 }
-.driver-row .driver-name    { flex: 1; }
+.driver-row .driver-name    { flex: 1; min-width: 80px; }
 .driver-row .driver-maxhrs  { width: 60px; flex: 0 0 60px; }
+.driver-row .driver-minhrs  { width: 60px; flex: 0 0 60px; }
 .add-driver-btn { margin-top: 0.4rem; font-size: 0.8rem; }
 
 /* ===== MESSAGES ===== */
