@@ -8,6 +8,9 @@ on:
       - 'EnduranceTelemetry.spec'
       - '.github/workflows/build_bridge.yml'
 
+permissions:
+  contents: write
+
 jobs:
   build:
     runs-on: windows-latest
@@ -37,17 +40,20 @@ jobs:
           retention-days: 90
 
       - name: Delete existing latest release
+        shell: bash
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          gh release delete latest --yes --cleanup-tag 2>$null || true
+          gh release delete latest --yes 2>/dev/null || true
+          git push origin :refs/tags/latest 2>/dev/null || true
 
       - name: Create latest release
+        shell: bash
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          gh release create latest dist/EnduranceTelemetry.exe `
-            --title "Telemetry Bridge — Latest Build" `
+          gh release create latest dist/EnduranceTelemetry.exe \
+            --title "Telemetry Bridge — Latest Build" \
             --notes "## Endurance Race Planner — Telemetry Bridge
 
           **No installation required.** Just download and double-click.
@@ -61,5 +67,5 @@ jobs:
           Your settings are saved automatically for next time.
 
           ---
-          *Built automatically from the latest commit on master.*" `
+          *Built automatically from the latest commit on master.*" \
             --prerelease
