@@ -147,6 +147,11 @@ def init_db():
     """)
     cur.execute("ALTER TABLE race_plans ADD COLUMN IF NOT EXISTS team_id INTEGER REFERENCES teams(id)")
     cur.execute("ALTER TABLE teams ADD COLUMN IF NOT EXISTS invite_code TEXT UNIQUE")
+    # Back-fill invite codes for teams created before this column existed
+    cur.execute("SELECT id FROM teams WHERE invite_code IS NULL")
+    for row in cur.fetchall():
+        code = secrets.token_hex(4).upper()
+        cur.execute("UPDATE teams SET invite_code=%s WHERE id=%s", (code, row[0]))
     cur.execute("""
         CREATE TABLE IF NOT EXISTS pit_stops (
             id           SERIAL PRIMARY KEY,

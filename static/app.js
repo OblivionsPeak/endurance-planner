@@ -2356,39 +2356,46 @@ async function doLogout() {
   await loadPlanList();
 }
 
-let _inviteCode = null;
+let _inviteCode  = null;
+let _loggedIn    = false;
+let _teamName    = null;
+let _displayName = null;
 
 function setAuthState(teamName, displayName, inviteCode) {
   const badge = $('#authTeamBadge');
   const btn   = $('#authBtn');
-  _inviteCode = inviteCode || null;
+  _inviteCode  = inviteCode  || null;
+  _loggedIn    = !!teamName;
+  _teamName    = teamName    || null;
+  _displayName = displayName || null;
   if (teamName) {
-    badge.textContent = teamName;
+    badge.textContent   = `✓ ${teamName}`;
     badge.style.display = '';
-    btn.textContent = 'Team';
-    btn.onclick = openAuth;
+    btn.textContent     = 'Team ▾';
   } else {
     badge.style.display = 'none';
-    btn.textContent = 'Sign In';
-    btn.onclick = openAuth;
+    btn.textContent     = 'Sign In';
   }
 }
 
 function openAuth() {
   $('#authOverlay').classList.add('open');
-  // If logged in, show the invite code panel instead of tabs
-  if (_inviteCode) {
+  const h2 = document.querySelector('#authOverlay .auth-modal h2');
+  if (_loggedIn) {
+    // Hide all login/register forms, show the signed-in panel
     ['login','register','join'].forEach(t => {
       const form = $(`#authForm${t.charAt(0).toUpperCase()+t.slice(1)}`);
       if (form) form.style.display = 'none';
-      const btn = $(`#authTab${t.charAt(0).toUpperCase()+t.slice(1)}`);
-      if (btn) btn.classList.remove('active');
+      const tabBtn = $(`#authTab${t.charAt(0).toUpperCase()+t.slice(1)}`);
+      if (tabBtn) tabBtn.classList.remove('active');
     });
     const inv = $('#authInviteSection');
     if (inv) inv.style.display = '';
     const display = $('#inviteCodeDisplay');
-    if (display) display.textContent = _inviteCode;
+    if (display) display.textContent = _inviteCode || 'Loading…';
+    if (h2) h2.textContent = `◈  ${_teamName}  —  ${_displayName}`;
   } else {
+    if (h2) h2.textContent = '◇ TEAM ACCESS';
     switchAuthTab('login');
   }
 }
