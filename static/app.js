@@ -2275,10 +2275,15 @@ function openAuth()  { $('#authOverlay').classList.add('open'); }
 function closeAuth() { $('#authOverlay').classList.remove('open'); }
 
 function switchAuthTab(tab) {
-  $('#authFormLogin').style.display    = tab === 'login'    ? '' : 'none';
-  $('#authFormRegister').style.display = tab === 'register' ? '' : 'none';
-  $('#authTabLogin').classList.toggle('active',    tab === 'login');
-  $('#authTabRegister').classList.toggle('active', tab === 'register');
+  ['login','register','join'].forEach(t => {
+    const form = $(`#authForm${t.charAt(0).toUpperCase()+t.slice(1)}`);
+    const btn  = $(`#authTab${t.charAt(0).toUpperCase()+t.slice(1)}`);
+    if (form) form.style.display = t === tab ? '' : 'none';
+    if (btn)  btn.classList.toggle('active', t === tab);
+  });
+  // Hide invite section when switching tabs
+  const inv = $('#authInviteSection');
+  if (inv) inv.style.display = 'none';
 }
 
 async function doLogin() {
@@ -2292,7 +2297,9 @@ async function doLogin() {
     });
     const d = await res.json();
     if (!res.ok) { $('#loginError').textContent = d.error; return; }
-    setAuthState(d.team_name, d.display_name);
+    // Fetch invite code separately since login response doesn't include it
+    const me = await (await fetch('/auth/me')).json();
+    setAuthState(d.team_name, d.display_name, me.invite_code);
     closeAuth();
     await loadPlanList();
   } catch(e) { $('#loginError').textContent = 'Connection error'; }
@@ -2311,26 +2318,55 @@ async function doRegister() {
     });
     const d = await res.json();
     if (!res.ok) { $('#registerError').textContent = d.error; return; }
-    setAuthState(d.team_name, d.display_name);
+    const me = await (await fetch('/auth/me')).json();
+    setAuthState(d.team_name, d.display_name, me.invite_code);
     closeAuth();
     await loadPlanList();
   } catch(e) { $('#registerError').textContent = 'Connection error'; }
 }
 
+async function doJoinTeam() {
+  const invite_code  = $('#joinCode').value.trim().toUpperCase();
+  const display_name = $('#joinName').value.trim();
+  const email        = $('#joinEmail').value.trim();
+  const password     = $('#joinPassword').value;
+  $('#joinError').textContent = '';
+  if (!invite_code || invite_code.length !== 8) {
+    $('#joinError').textContent = 'Enter the 8-character invite code from your team owner.';
+    return;
+  }
+  try {
+    const res = await fetch('/auth/register', {
+      method: 'POST', headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({ invite_code, display_name, email, password }),
+    });
+    const d = await res.json();
+    if (!res.ok) { $('#joinError').textContent = d.error; return; }
+    const me = await (await fetch('/auth/me')).json();
+    setAuthState(d.team_name, d.display_name, me.invite_code);
+    closeAuth();
+    await loadPlanList();
+  } catch(e) { $('#joinError').textContent = 'Connection error'; }
+}
+
 async function doLogout() {
   await fetch('/auth/logout', { method: 'POST' });
-  setAuthState(null, null);
+  setAuthState(null, null, null);
+  closeAuth();
   await loadPlanList();
 }
 
-function setAuthState(teamName, displayName) {
+let _inviteCode = null;
+
+function setAuthState(teamName, displayName, inviteCode) {
   const badge = $('#authTeamBadge');
   const btn   = $('#authBtn');
+  _inviteCode = inviteCode || null;
   if (teamName) {
     badge.textContent = teamName;
     badge.style.display = '';
-    btn.textContent = 'Sign Out';
-    btn.onclick = doLogout;
+    btn.textContent = 'Team';
+    btn.onclick = openAuth;
   } else {
     badge.style.display = 'none';
     btn.textContent = 'Sign In';
@@ -2338,16 +2374,45 @@ function setAuthState(teamName, displayName) {
   }
 }
 
+function openAuth() {
+  $('#authOverlay').classList.add('open');
+  // If logged in, show the invite code panel instead of tabs
+  if (_inviteCode) {
+    ['login','register','join'].forEach(t => {
+      const form = $(`#authForm${t.charAt(0).toUpperCase()+t.slice(1)}`);
+      if (form) form.style.display = 'none';
+      const btn = $(`#authTab${t.charAt(0).toUpperCase()+t.slice(1)}`);
+      if (btn) btn.classList.remove('active');
+    });
+    const inv = $('#authInviteSection');
+    if (inv) inv.style.display = '';
+    const display = $('#inviteCodeDisplay');
+    if (display) display.textContent = _inviteCode;
+  } else {
+    switchAuthTab('login');
+  }
+}
+
+function copyInviteCode() {
+  if (!_inviteCode) return;
+  navigator.clipboard.writeText(_inviteCode).then(() => {
+    const btn = $('#copyCodeBtn');
+    if (btn) { btn.textContent = 'Copied!'; setTimeout(() => btn.textContent = 'Copy', 2000); }
+  });
+}
+
 async function checkAuthOnBoot() {
   try {
     const res = await fetch('/auth/me');
     const d   = await res.json();
-    if (d.logged_in) setAuthState(d.team_name, d.display_name);
+    if (d.logged_in) setAuthState(d.team_name, d.display_name, d.invite_code);
   } catch(_) {}
 }
 
-$('#authBtn').addEventListener('click', openAuth);
-$('#authOverlay').addEventListener('click', e => { if (e.target === $('#authOverlay')) closeAuth(); });
+document.addEventListener('DOMContentLoaded', () => {
+  $('#authBtn')?.addEventListener('click', openAuth);
+  $('#authOverlay')?.addEventListener('click', e => { if (e.target === $('#authOverlay')) closeAuth(); });
+});
 
 // =============================================================================
 // RACE TIMELINE (Gantt chart)

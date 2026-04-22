@@ -146,6 +146,7 @@ def init_db():
         )
     """)
     cur.execute("ALTER TABLE race_plans ADD COLUMN IF NOT EXISTS team_id INTEGER REFERENCES teams(id)")
+    cur.execute("ALTER TABLE teams ADD COLUMN IF NOT EXISTS invite_code TEXT UNIQUE")
     cur.execute("""
         CREATE TABLE IF NOT EXISTS pit_stops (
             id           SERIAL PRIMARY KEY,
@@ -308,24 +309,42 @@ def index():
 
 @app.route('/auth/register', methods=['POST'])
 def auth_register():
+    """Create a new team, or join an existing team via invite_code."""
     data = request.get_json() or {}
-    team_name    = data.get('team_name', '').strip()
     display_name = data.get('display_name', '').strip()
     email        = data.get('email', '').strip().lower()
     password     = data.get('password', '')
-    if not all([team_name, display_name, email, password]):
+    invite_code  = data.get('invite_code', '').strip().upper()
+
+    if not all([display_name, email, password]):
         return jsonify({'error': 'All fields are required'}), 400
     if len(password) < 8:
         return jsonify({'error': 'Password must be at least 8 characters'}), 400
     existing = db_exec("SELECT id FROM users WHERE email=%s", (email,)).fetchone()
     if existing:
         return jsonify({'error': 'Email already registered'}), 409
+
     now = datetime.utcnow().isoformat()
-    team_row = db_exec(
-        "INSERT INTO teams (name, created_at) VALUES (%s, %s) RETURNING id",
-        (team_name, now)
-    ).fetchone()
-    team_id = team_row['id']
+
+    if invite_code:
+        # Join existing team
+        team_row = db_exec("SELECT id, name FROM teams WHERE invite_code=%s", (invite_code,)).fetchone()
+        if not team_row:
+            return jsonify({'error': 'Invite code not found — check with your team owner'}), 404
+        team_id   = team_row['id']
+        team_name = team_row['name']
+    else:
+        # Create new team
+        team_name = data.get('team_name', '').strip()
+        if not team_name:
+            return jsonify({'error': 'Team name is required when creating a new team'}), 400
+        code = secrets.token_hex(4).upper()   # 8-char hex invite code
+        team_row = db_exec(
+            "INSERT INTO teams (name, created_at, invite_code) VALUES (%s, %s, %s) RETURNING id",
+            (team_name, now, code)
+        ).fetchone()
+        team_id = team_row['id']
+
     user_row = db_exec(
         "INSERT INTO users (team_id, email, display_name, password_hash, created_at) VALUES (%s,%s,%s,%s,%s) RETURNING id",
         (team_id, email, display_name, _hash_password(password), now)
@@ -363,7 +382,13 @@ def auth_me():
     user = _current_user()
     if not user:
         return jsonify({'logged_in': False})
-    return jsonify({'logged_in': True, 'team_name': user['team_name'], 'display_name': user['display_name']})
+    team = db_exec("SELECT invite_code FROM teams WHERE id=%s", (user['team_id'],)).fetchone()
+    return jsonify({
+        'logged_in':    True,
+        'team_name':    user['team_name'],
+        'display_name': user['display_name'],
+        'invite_code':  team['invite_code'] if team else None,
+    })
 
 
 # ---------------------------------------------------------------------------

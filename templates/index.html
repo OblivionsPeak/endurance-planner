@@ -459,9 +459,11 @@
     <div class="auth-modal">
       <h2>&#9671; TEAM ACCESS</h2>
       <div class="auth-tabs">
-        <button class="auth-tab-btn active" id="authTabLogin" onclick="switchAuthTab('login')">Sign In</button>
-        <button class="auth-tab-btn" id="authTabRegister" onclick="switchAuthTab('register')">Register Team</button>
+        <button class="auth-tab-btn active" id="authTabLogin"    onclick="switchAuthTab('login')">Sign In</button>
+        <button class="auth-tab-btn"        id="authTabRegister" onclick="switchAuthTab('register')">New Team</button>
+        <button class="auth-tab-btn"        id="authTabJoin"     onclick="switchAuthTab('join')">Join Team</button>
       </div>
+
       <!-- Login form -->
       <div id="authFormLogin">
         <div class="auth-form">
@@ -471,7 +473,8 @@
           <button class="auth-submit" onclick="doLogin()">SIGN IN</button>
         </div>
       </div>
-      <!-- Register form -->
+
+      <!-- New team form -->
       <div id="authFormRegister" style="display:none">
         <div class="auth-form">
           <label>Team Name<input type="text" id="regTeam" placeholder="e.g. Operation Motorsport" /></label>
@@ -482,7 +485,36 @@
           <button class="auth-submit" onclick="doRegister()">CREATE TEAM</button>
         </div>
       </div>
-      <button class="btn-ghost" style="width:100%;margin-top:0.75rem;font-size:0.8rem" onclick="closeAuth()">Cancel</button>
+
+      <!-- Join existing team form -->
+      <div id="authFormJoin" style="display:none">
+        <p style="font-size:0.8rem;color:var(--text-dim);margin-bottom:0.75rem">
+          Ask your team owner for your team's invite code, then enter it below.
+        </p>
+        <div class="auth-form">
+          <label>Invite Code<input type="text" id="joinCode" placeholder="e.g. A3F8C21B" style="text-transform:uppercase;letter-spacing:0.12em" maxlength="8" /></label>
+          <label>Your Name<input type="text" id="joinName" placeholder="e.g. John Smith" /></label>
+          <label>Email<input type="email" id="joinEmail" placeholder="you@team.com" /></label>
+          <label>Password<input type="password" id="joinPassword" placeholder="Min 8 characters" /></label>
+          <div class="auth-error" id="joinError"></div>
+          <button class="auth-submit" onclick="doJoinTeam()">JOIN TEAM</button>
+        </div>
+      </div>
+
+      <!-- Invite code display (shown when logged in and modal reopened) -->
+      <div id="authInviteSection" style="display:none;margin-top:0.75rem">
+        <div style="background:var(--bg3);border:1px solid var(--border);border-radius:var(--radius);padding:0.75rem">
+          <div style="font-size:0.65rem;letter-spacing:0.1em;color:var(--text-dim);margin-bottom:0.4rem">YOUR TEAM INVITE CODE</div>
+          <div style="display:flex;align-items:center;gap:0.5rem">
+            <span id="inviteCodeDisplay" style="font-size:1.3rem;font-weight:800;letter-spacing:0.2em;color:var(--accent);font-family:monospace"></span>
+            <button class="btn-auth" onclick="copyInviteCode()" id="copyCodeBtn" style="margin-left:auto">Copy</button>
+          </div>
+          <div style="font-size:0.7rem;color:var(--text-dim);margin-top:0.35rem">Share this with teammates — they use it on the "Join Team" tab.</div>
+        </div>
+        <button class="btn-ghost" style="width:100%;margin-top:0.5rem;font-size:0.8rem;color:var(--red)" onclick="doLogout()">Sign Out</button>
+      </div>
+
+      <button class="btn-ghost" style="width:100%;margin-top:0.75rem;font-size:0.8rem" onclick="closeAuth()">Close</button>
     </div>
   </div>
 
