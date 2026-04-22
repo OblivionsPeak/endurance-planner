@@ -238,7 +238,7 @@ class App(tk.Tk):
         hdr.pack(fill='x', pady=(14, 8), padx=14)
         tk.Label(hdr, text='⬡', bg=BG, fg=ACCENT, font=('Segoe UI', 18)).pack(side='left')
         tk.Label(hdr, text='  ENDURANCE RACE PLANNER', bg=BG, fg=TEXT,
-                 font=('Segoe UI', 12, 'bold'), letter_spacing=2).pack(side='left')
+                 font=('Segoe UI', 12, 'bold')).pack(side='left')
         tk.Label(hdr, text='Telemetry Bridge', bg=BG, fg=DIM,
                  font=('Segoe UI', 9)).pack(side='left', padx=(8, 0))
 
