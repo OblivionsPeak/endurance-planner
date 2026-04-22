@@ -1,19 +1,34 @@
 import os
 import json
 import math
+import hashlib
+import secrets
 import psycopg2
 import psycopg2.extras
 from datetime import datetime
 from itertools import permutations
-from flask import Flask, render_template, request, jsonify, g
+from flask import Flask, render_template, request, jsonify, g, session
 from flask_socketio import SocketIO, join_room
 from dotenv import load_dotenv
 
 load_dotenv()
 
 app = Flask(__name__)
+app.secret_key = os.environ.get('SECRET_KEY', secrets.token_hex(32))
 socketio = SocketIO(app, async_mode='threading', cors_allowed_origins='*')
 DATABASE_URL = os.environ.get('DATABASE_URL')
+
+
+def _hash_password(password: str) -> str:
+    return hashlib.sha256(password.encode()).hexdigest()
+
+
+def _current_user():
+    uid = session.get('user_id')
+    if not uid:
+        return None
+    row = db_exec("SELECT u.*, t.name AS team_name FROM users u JOIN teams t ON t.id=u.team_id WHERE u.id=%s", (uid,)).fetchone()
+    return dict(row) if row else None
 
 # ---------------------------------------------------------------------------
 # Database helpers
@@ -113,6 +128,35 @@ def init_db():
         )
     """)
     cur.execute("ALTER TABLE competitors ADD COLUMN IF NOT EXISTS on_pit_road INTEGER NOT NULL DEFAULT 0")
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS teams (
+            id         SERIAL PRIMARY KEY,
+            name       TEXT NOT NULL,
+            created_at TEXT NOT NULL
+        )
+    """)
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS users (
+            id            SERIAL PRIMARY KEY,
+            team_id       INTEGER NOT NULL REFERENCES teams(id) ON DELETE CASCADE,
+            email         TEXT NOT NULL UNIQUE,
+            display_name  TEXT NOT NULL,
+            password_hash TEXT NOT NULL,
+            created_at    TEXT NOT NULL
+        )
+    """)
+    cur.execute("ALTER TABLE race_plans ADD COLUMN IF NOT EXISTS team_id INTEGER REFERENCES teams(id)")
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS pit_stops (
+            id           SERIAL PRIMARY KEY,
+            plan_id      INTEGER NOT NULL REFERENCES race_plans(id) ON DELETE CASCADE,
+            entry_lap    INTEGER NOT NULL,
+            entry_time_s FLOAT NOT NULL,
+            exit_time_s  FLOAT,
+            duration_s   FLOAT,
+            logged_at    TEXT NOT NULL
+        )
+    """)
     cur.execute("""
         CREATE TABLE IF NOT EXISTS lap_times (
             id          SERIAL PRIMARY KEY,
@@ -256,6 +300,116 @@ def calculate_strategy(config: dict, drivers: list) -> list:
 @app.route('/')
 def index():
     return render_template('index.html')
+
+
+# ---------------------------------------------------------------------------
+# Routes — Auth
+# ---------------------------------------------------------------------------
+
+@app.route('/auth/register', methods=['POST'])
+def auth_register():
+    data = request.get_json() or {}
+    team_name    = data.get('team_name', '').strip()
+    display_name = data.get('display_name', '').strip()
+    email        = data.get('email', '').strip().lower()
+    password     = data.get('password', '')
+    if not all([team_name, display_name, email, password]):
+        return jsonify({'error': 'All fields are required'}), 400
+    if len(password) < 8:
+        return jsonify({'error': 'Password must be at least 8 characters'}), 400
+    existing = db_exec("SELECT id FROM users WHERE email=%s", (email,)).fetchone()
+    if existing:
+        return jsonify({'error': 'Email already registered'}), 409
+    now = datetime.utcnow().isoformat()
+    team_row = db_exec(
+        "INSERT INTO teams (name, created_at) VALUES (%s, %s) RETURNING id",
+        (team_name, now)
+    ).fetchone()
+    team_id = team_row['id']
+    user_row = db_exec(
+        "INSERT INTO users (team_id, email, display_name, password_hash, created_at) VALUES (%s,%s,%s,%s,%s) RETURNING id",
+        (team_id, email, display_name, _hash_password(password), now)
+    ).fetchone()
+    db_commit()
+    session['user_id'] = user_row['id']
+    session['team_id'] = team_id
+    return jsonify({'ok': True, 'team_name': team_name, 'display_name': display_name})
+
+
+@app.route('/auth/login', methods=['POST'])
+def auth_login():
+    data = request.get_json() or {}
+    email    = data.get('email', '').strip().lower()
+    password = data.get('password', '')
+    row = db_exec(
+        "SELECT u.*, t.name AS team_name FROM users u JOIN teams t ON t.id=u.team_id WHERE u.email=%s AND u.password_hash=%s",
+        (email, _hash_password(password))
+    ).fetchone()
+    if not row:
+        return jsonify({'error': 'Invalid email or password'}), 401
+    session['user_id'] = row['id']
+    session['team_id'] = row['team_id']
+    return jsonify({'ok': True, 'team_name': row['team_name'], 'display_name': row['display_name']})
+
+
+@app.route('/auth/logout', methods=['POST'])
+def auth_logout():
+    session.clear()
+    return jsonify({'ok': True})
+
+
+@app.route('/auth/me', methods=['GET'])
+def auth_me():
+    user = _current_user()
+    if not user:
+        return jsonify({'logged_in': False})
+    return jsonify({'logged_in': True, 'team_name': user['team_name'], 'display_name': user['display_name']})
+
+
+# ---------------------------------------------------------------------------
+# Routes — Pit stop stopwatch
+# ---------------------------------------------------------------------------
+
+@app.route('/api/plans/<int:plan_id>/pit_stop/entry', methods=['POST'])
+def pit_stop_entry(plan_id):
+    data = request.get_json() or {}
+    now = datetime.utcnow().isoformat()
+    db_exec(
+        "INSERT INTO pit_stops (plan_id, entry_lap, entry_time_s, logged_at) VALUES (%s,%s,%s,%s)",
+        (plan_id, data.get('lap', 0), data.get('session_time_s', 0), now)
+    )
+    db_commit()
+    return jsonify({'ok': True})
+
+
+@app.route('/api/plans/<int:plan_id>/pit_stop/exit', methods=['POST'])
+def pit_stop_exit(plan_id):
+    data  = request.get_json() or {}
+    exit_t = float(data.get('session_time_s', 0))
+    row = db_exec(
+        "SELECT id, entry_time_s FROM pit_stops WHERE plan_id=%s AND exit_time_s IS NULL ORDER BY id DESC LIMIT 1",
+        (plan_id,)
+    ).fetchone()
+    if row:
+        duration = round(exit_t - row['entry_time_s'], 1)
+        db_exec(
+            "UPDATE pit_stops SET exit_time_s=%s, duration_s=%s WHERE id=%s",
+            (exit_t, duration, row['id'])
+        )
+        db_commit()
+    return jsonify({'ok': True})
+
+
+@app.route('/api/plans/<int:plan_id>/pit_stops', methods=['GET'])
+def get_pit_stops(plan_id):
+    rows = db_exec(
+        "SELECT entry_lap, duration_s, logged_at FROM pit_stops WHERE plan_id=%s AND duration_s IS NOT NULL ORDER BY id DESC LIMIT 20",
+        (plan_id,)
+    ).fetchall()
+    stops = [dict(r) for r in rows]
+    avg = round(sum(s['duration_s'] for s in stops) / len(stops), 1) if stops else None
+    best = round(min(s['duration_s'] for s in stops), 1) if stops else None
+    return jsonify({'stops': stops, 'avg_s': avg, 'best_s': best, 'count': len(stops)})
 
 
 # ---------------------------------------------------------------------------
@@ -535,13 +689,44 @@ def push_telemetry(plan_id):
         return jsonify({'error': 'Not found'}), 404
 
     data  = request.get_json() or {}
+    new_lap   = data.get('current_lap') or 0
+    new_fuel  = data.get('fuel_level')
+
+    # Load previous telemetry for fuel delta computation
+    prev_row = db_exec("SELECT telemetry_state FROM race_plans WHERE id=%s", (plan_id,)).fetchone()
+    prev_state = {}
+    if prev_row and prev_row['telemetry_state']:
+        try:
+            prev_state = json.loads(prev_row['telemetry_state'])
+        except Exception:
+            pass
+
+    # Compute fuel-per-lap delta vs plan
+    fuel_delta = prev_state.get('fuel_delta', {})
+    prev_lap  = prev_state.get('current_lap') or 0
+    prev_fuel = prev_state.get('fuel_level')
+    if (new_fuel is not None and prev_fuel is not None
+            and new_lap > prev_lap and new_lap - prev_lap == 1):
+        actual_fpl = round(prev_fuel - new_fuel, 4)
+        if 0.1 < actual_fpl < 5.0:   # sanity filter
+            history = fuel_delta.get('history', [])
+            history.append(actual_fpl)
+            history = history[-10:]   # keep last 10 laps
+            avg_actual = round(sum(history) / len(history), 4)
+            fuel_delta = {
+                'history':       history,
+                'avg_actual_fpl': avg_actual,
+                'last_actual_fpl': actual_fpl,
+            }
+
     state = {
-        'current_lap':      data.get('current_lap'),
-        'fuel_level':       data.get('fuel_level'),
+        'current_lap':      new_lap,
+        'fuel_level':       new_fuel,
         'last_lap_time_s':  data.get('last_lap_time_s'),
         'session_time_s':   data.get('session_time_s'),
         'is_on_track':      data.get('is_on_track'),
         'session_info':     data.get('session_info'),
+        'fuel_delta':       fuel_delta,
         'updated_at':       datetime.utcnow().isoformat(),
     }
     db_exec("UPDATE race_plans SET telemetry_state=%s WHERE id=%s",

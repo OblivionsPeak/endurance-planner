@@ -88,11 +88,12 @@ function initTabs() {
       btn.classList.add('active');
       $(`#tab-${tab}`).classList.add('active');
       state.activeTab = tab;
-      if (tab === 'stint'   && state.activePlan) renderStintTable(state.activePlan);
-      if (tab === 'live'    && state.activePlan) { renderLiveMode(state.activePlan); loadCompetitors(); }
-      if (tab === 'laps'    && state.activePlan) renderLapTimes(state.activePlan);
-      if (tab === 'debrief' && state.activePlan) renderDebrief(state.activePlan);
-      if (tab === 'export'  && state.activePlan) renderExport(state.activePlan);
+      if (tab === 'stint'    && state.activePlan) renderStintTable(state.activePlan);
+      if (tab === 'live'     && state.activePlan) { renderLiveMode(state.activePlan); loadCompetitors(); }
+      if (tab === 'laps'     && state.activePlan) renderLapTimes(state.activePlan);
+      if (tab === 'debrief'  && state.activePlan) renderDebrief(state.activePlan);
+      if (tab === 'export'   && state.activePlan) renderExport(state.activePlan);
+      if (tab === 'timeline' && state.activePlan) renderTimeline(state.activePlan);
     });
   });
 }
@@ -2254,6 +2255,7 @@ async function boot() {
   addDriverRow();
 
   updateFuelPreview();
+  await checkAuthOnBoot();
   await loadPlanList();
 
   // auto-load the most recent plan if any
@@ -2265,3 +2267,362 @@ async function boot() {
 }
 
 document.addEventListener('DOMContentLoaded', boot);
+
+// =============================================================================
+// AUTH
+// =============================================================================
+function openAuth()  { $('#authOverlay').classList.add('open'); }
+function closeAuth() { $('#authOverlay').classList.remove('open'); }
+
+function switchAuthTab(tab) {
+  $('#authFormLogin').style.display    = tab === 'login'    ? '' : 'none';
+  $('#authFormRegister').style.display = tab === 'register' ? '' : 'none';
+  $('#authTabLogin').classList.toggle('active',    tab === 'login');
+  $('#authTabRegister').classList.toggle('active', tab === 'register');
+}
+
+async function doLogin() {
+  const email    = $('#loginEmail').value.trim();
+  const password = $('#loginPassword').value;
+  $('#loginError').textContent = '';
+  try {
+    const res = await fetch('/auth/login', {
+      method: 'POST', headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({ email, password }),
+    });
+    const d = await res.json();
+    if (!res.ok) { $('#loginError').textContent = d.error; return; }
+    setAuthState(d.team_name, d.display_name);
+    closeAuth();
+    await loadPlanList();
+  } catch(e) { $('#loginError').textContent = 'Connection error'; }
+}
+
+async function doRegister() {
+  const team_name    = $('#regTeam').value.trim();
+  const display_name = $('#regName').value.trim();
+  const email        = $('#regEmail').value.trim();
+  const password     = $('#regPassword').value;
+  $('#registerError').textContent = '';
+  try {
+    const res = await fetch('/auth/register', {
+      method: 'POST', headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({ team_name, display_name, email, password }),
+    });
+    const d = await res.json();
+    if (!res.ok) { $('#registerError').textContent = d.error; return; }
+    setAuthState(d.team_name, d.display_name);
+    closeAuth();
+    await loadPlanList();
+  } catch(e) { $('#registerError').textContent = 'Connection error'; }
+}
+
+async function doLogout() {
+  await fetch('/auth/logout', { method: 'POST' });
+  setAuthState(null, null);
+  await loadPlanList();
+}
+
+function setAuthState(teamName, displayName) {
+  const badge = $('#authTeamBadge');
+  const btn   = $('#authBtn');
+  if (teamName) {
+    badge.textContent = teamName;
+    badge.style.display = '';
+    btn.textContent = 'Sign Out';
+    btn.onclick = doLogout;
+  } else {
+    badge.style.display = 'none';
+    btn.textContent = 'Sign In';
+    btn.onclick = openAuth;
+  }
+}
+
+async function checkAuthOnBoot() {
+  try {
+    const res = await fetch('/auth/me');
+    const d   = await res.json();
+    if (d.logged_in) setAuthState(d.team_name, d.display_name);
+  } catch(_) {}
+}
+
+$('#authBtn').addEventListener('click', openAuth);
+$('#authOverlay').addEventListener('click', e => { if (e.target === $('#authOverlay')) closeAuth(); });
+
+// =============================================================================
+// RACE TIMELINE (Gantt chart)
+// =============================================================================
+function renderTimeline(plan) {
+  const el = $('#timelineChart');
+  if (!el) return;
+  const stints  = plan.stints || [];
+  const drivers = plan.drivers || [];
+  if (!stints.length) {
+    el.innerHTML = '<p class="empty-state">Calculate a strategy first to see the timeline.</p>';
+    return;
+  }
+
+  const totalLaps = Math.max(...stints.map(s => s.end_lap || s.start_lap), 1);
+  const currentLap = parseInt($('#currentLap')?.value) || 0;
+
+  // Group stints by driver
+  const byDriver = {};
+  stints.forEach(s => {
+    const key = s.driver_name || 'Unknown';
+    if (!byDriver[key]) byDriver[key] = { name: key, color: s.driver_color || '#C49A3C', stints: [] };
+    byDriver[key].stints.push(s);
+  });
+
+  // Build axis ticks
+  const tickStep = totalLaps <= 50 ? 10 : totalLaps <= 100 ? 20 : totalLaps <= 200 ? 25 : 50;
+  let ticks = '';
+  for (let lap = 0; lap <= totalLaps; lap += tickStep) {
+    const pct = (lap / totalLaps) * 100;
+    ticks += `<span class="timeline-lap-tick" style="left:${pct}%">${lap}</span>`;
+  }
+
+  // Build driver rows
+  const rows = Object.values(byDriver).map(driver => {
+    const bars = driver.stints.map(s => {
+      const left  = ((s.start_lap - 1) / totalLaps) * 100;
+      const width = Math.max(((s.end_lap - s.start_lap + 1) / totalLaps) * 100, 0.5);
+      const mode  = s.fuel_mode === 'save' ? '⬇' : s.fuel_mode === 'push' ? '⬆' : '';
+      return `<div class="timeline-stint-bar" style="left:${left.toFixed(2)}%;width:${width.toFixed(2)}%;background:${driver.color}"
+                   title="Stint #${s.stint_num}: Laps ${s.start_lap}–${s.end_lap} | Fuel: ${s.fuel_load}L | ${s.fuel_mode}">
+                ${s.stint_num}${mode}
+              </div>`;
+    }).join('');
+
+    const pitMarkers = driver.stints.filter(s => s.pit_lap).map(s => {
+      const pct = (s.pit_lap / totalLaps) * 100;
+      return `<div class="timeline-pit-marker" style="left:${pct.toFixed(2)}%" title="Pit lap ${s.pit_lap}"></div>`;
+    }).join('');
+
+    return `
+      <div class="timeline-driver-row">
+        <div class="timeline-driver-label" title="${driver.name}">${driver.name}</div>
+        <div class="timeline-track">
+          ${bars}${pitMarkers}
+          ${currentLap > 0 ? `<div class="timeline-now-line" style="left:${((currentLap/totalLaps)*100).toFixed(2)}%" title="Lap ${currentLap}"></div>` : ''}
+        </div>
+      </div>`;
+  }).join('');
+
+  // Legend
+  const legend = Object.values(byDriver).map(d =>
+    `<span class="timeline-legend-item"><span class="timeline-legend-dot" style="background:${d.color}"></span>${d.name}</span>`
+  ).join('') + `
+    <span class="timeline-legend-item"><span class="timeline-legend-dot" style="background:var(--text-dim);opacity:0.4"></span>Pit stop</span>
+    ${currentLap > 0 ? '<span class="timeline-legend-item"><span class="timeline-legend-dot" style="background:var(--accent)"></span>Current lap</span>' : ''}`;
+
+  el.innerHTML = `
+    <div class="timeline-chart">
+      <div class="timeline-lap-axis">${ticks}</div>
+      ${rows}
+      <div class="timeline-legend">${legend}</div>
+    </div>`;
+}
+
+// =============================================================================
+// FUEL DELTA PANEL
+// =============================================================================
+function renderFuelDelta(fuelDelta, plannedFpl) {
+  const container = $('#fuelDeltaPanel');
+  if (!container || !fuelDelta) return;
+
+  const avg    = fuelDelta.avg_actual_fpl;
+  const last   = fuelDelta.last_actual_fpl;
+  if (!avg) { container.innerHTML = ''; return; }
+
+  const delta     = avg - plannedFpl;
+  const deltaPct  = Math.min(Math.abs(delta / plannedFpl) * 100, 50);
+  const overUnder = Math.abs(delta) < 0.02 ? 'ok' : delta > 0 ? 'over' : 'under';
+  const sign      = delta > 0 ? '+' : '';
+  const barLeft   = delta > 0 ? '50%' : `${50 - deltaPct}%`;
+  const barColor  = overUnder === 'ok' ? 'var(--text-dim)' : overUnder === 'over' ? 'var(--red)' : 'var(--green)';
+
+  container.innerHTML = `
+    <div class="fuel-delta-bar">
+      <span class="fuel-delta-label">FUEL Δ/LAP</span>
+      <span class="fuel-delta-value ${overUnder}">${sign}${delta.toFixed(3)} L</span>
+      <div class="fuel-delta-track">
+        <div class="fuel-delta-center"></div>
+        <div class="fuel-delta-fill" style="left:${barLeft};width:${deltaPct}%;background:${barColor}"></div>
+      </div>
+      <span class="fuel-delta-note">Avg ${avg.toFixed(3)} L/lap vs plan ${plannedFpl.toFixed(3)}</span>
+    </div>`;
+}
+
+// =============================================================================
+// PIT STOP STOPWATCH PANEL
+// =============================================================================
+async function loadPitStopPanel() {
+  if (!state.activePlan) return;
+  const container = $('#pitStopPanel');
+  if (!container) return;
+  try {
+    const res = await fetch(`/api/plans/${state.activePlan.id}/pit_stops`);
+    if (!res.ok) return;
+    const d = await res.json();
+    if (!d.count) { container.innerHTML = ''; return; }
+
+    const historyRows = d.stops.slice(0, 5).map(s =>
+      `<div class="pit-stop-row"><span>Lap ${s.entry_lap}</span><span>${s.duration_s}s</span></div>`
+    ).join('');
+
+    container.innerHTML = `
+      <div class="pit-stop-panel">
+        <div class="pit-stop-header">&#9646; PIT STOP TIMES</div>
+        <div class="pit-stop-stats">
+          <div class="pit-stop-stat">
+            <span class="pit-stop-stat-val">${d.best_s}s</span>
+            <span class="pit-stop-stat-lbl">Best</span>
+          </div>
+          <div class="pit-stop-stat">
+            <span class="pit-stop-stat-val">${d.avg_s}s</span>
+            <span class="pit-stop-stat-lbl">Average</span>
+          </div>
+          <div class="pit-stop-stat">
+            <span class="pit-stop-stat-val">${d.count}</span>
+            <span class="pit-stop-stat-lbl">Stops</span>
+          </div>
+        </div>
+        <div class="pit-stop-history">${historyRows}</div>
+      </div>`;
+  } catch(_) {}
+}
+
+// Inject delta and stopwatch panels into the live tab on first render
+function ensureLivePanels() {
+  if ($('#fuelDeltaPanel')) return;
+  const liveStatus = $('#liveStatus');
+  if (!liveStatus) return;
+
+  const deltaEl = document.createElement('div');
+  deltaEl.id = 'fuelDeltaPanel';
+  liveStatus.before(deltaEl);
+
+  const pitEl = document.createElement('div');
+  pitEl.id = 'pitStopPanel';
+  liveStatus.before(pitEl);
+}
+
+// Full pollTelemetry replacement — handles delta, stopwatch, session import
+async function pollTelemetry() {
+  if (!state.activePlan) return;
+  try {
+    const res = await fetch(`/api/plans/${state.activePlan.id}/telemetry`);
+    if (!res.ok) return;
+    const t = await res.json();
+
+    const live  = !t.stale && t.current_lap > 0;
+    const dot   = $('#telemetryDot');
+    const label = $('#telemetryLabel');
+    if (dot)   dot.className    = 'telemetry-dot' + (live ? ' live' : '');
+    if (label) label.textContent = live ? '● LIVE' : '○ Telemetry: offline';
+    if (label) label.className  = 'telemetry-label' + (live ? ' live' : '');
+
+    if (live && t.current_lap) {
+      const lapInput = $('#currentLap');
+      if (lapInput && parseInt(lapInput.value) !== t.current_lap) {
+        lapInput.value = t.current_lap;
+        updateLiveStatus();
+      }
+    }
+
+    // Fuel delta panel
+    if (t.fuel_delta && state.activePlan) {
+      ensureLivePanels();
+      const plannedFpl = state.activePlan.config?.fuel_per_lap || 1.0;
+      renderFuelDelta(t.fuel_delta, plannedFpl);
+    }
+
+    // Pit stop stopwatch
+    ensureLivePanels();
+    loadPitStopPanel();
+
+    // Session auto-import banner
+    if (t.session_info && !state.sessionImportDismissed) {
+      const si = t.session_info;
+      let banner = $('#sessionImportBanner');
+      if (!banner) {
+        banner = document.createElement('div');
+        banner.id = 'sessionImportBanner';
+        banner.className = 'session-import-banner';
+        banner.innerHTML = `
+          <span class="si-text">iRacing: <strong>${si.track_name || '?'}</strong> — ${si.series_name || '?'}</span>
+          <button class="si-import-btn btn-sm" id="siImportBtn">Import</button>
+          <button class="si-dismiss-btn btn-ghost btn-sm" id="siDismissBtn">✕</button>`;
+        const liveSection = $('#tab-live');
+        if (liveSection) liveSection.prepend(banner);
+        $('#siImportBtn')?.addEventListener('click', () => {
+          const trackInput = $('#trackName');
+          if (trackInput) trackInput.value = si.track_name || '';
+          state.sessionImportDismissed = true;
+          banner.remove();
+        });
+        $('#siDismissBtn')?.addEventListener('click', () => {
+          state.sessionImportDismissed = true;
+          banner.remove();
+        });
+      }
+    }
+  } catch(_) {}
+}
+
+// =============================================================================
+// PRINT STRATEGY SHEET
+// =============================================================================
+async function triggerPrint() {
+  if (!state.activePlan) { alert('Load a plan first.'); return; }
+  const plan   = state.activePlan;
+  const config = plan.config || {};
+  const stints = plan.stints || [];
+
+  // Populate print sheet
+  $('#printTitle').textContent    = plan.name || 'RACE STRATEGY';
+  $('#printSubtitle').textContent = `${config.race_duration_hrs || '?'}h | ${config.track_name || ''} | Lap time ${config.lap_time_s ? secToMinSec(config.lap_time_s) : '?'}`;
+  $('#printDate').textContent     = new Date().toLocaleString();
+  $('#printFooterPlan').textContent = `Plan ID: ${plan.id}`;
+
+  $('#printParams').innerHTML = [
+    { v: `${config.race_duration_hrs || '?'}h`, l: 'Duration' },
+    { v: secToMinSec(config.lap_time_s || 90), l: 'Lap time' },
+    { v: `${config.fuel_capacity_l || '?'}L`, l: 'Tank' },
+    { v: `${config.fuel_per_lap || '?'}L`, l: 'Fuel/lap' },
+    { v: `${config.pit_loss_s || '?'}s`, l: 'Pit loss' },
+    { v: stints.length,  l: 'Total stops' },
+    { v: plan.drivers?.length || '?', l: 'Drivers' },
+    { v: config.fuel_mode || 'normal', l: 'Mode' },
+  ].map(p => `<div class="print-param-cell"><strong>${p.v}</strong><span>${p.l}</span></div>`).join('');
+
+  $('#printStintBody').innerHTML = stints.map(s => `
+    <tr>
+      <td>${s.stint_num}</td>
+      <td><span class="print-driver-dot" style="background:${s.driver_color||'#C49A3C'}"></span>${s.driver_name || '—'}</td>
+      <td>${s.start_lap}–${s.end_lap} (${s.end_lap - s.start_lap + 1} laps)</td>
+      <td>${s.pit_lap || '—'}</td>
+      <td>${s.fuel_load}L</td>
+      <td>${s.fuel_mode}</td>
+      <td>${s.tire_compound || '—'}</td>
+    </tr>`).join('');
+
+  // Contingencies
+  try {
+    const cr  = await fetch(`/api/plans/${plan.id}/contingencies`);
+    const ctg = cr.ok ? await cr.json() : null;
+    if (ctg) {
+      $('#printContingencies').innerHTML = ['main','save_mode','short_fill'].map(k => {
+        const c = ctg[k]; if (!c) return '';
+        return `<div class="print-contingency-item">
+          <div class="print-contingency-name">${c.label}</div>
+          <div>${c.total_stops} stops — ~${c.avg_fuel_per_stop}L/stop</div>
+          <div style="font-size:0.75rem;color:#888">${c.note || ''}</div>
+        </div>`;
+      }).join('');
+      $('#printContingencySection').style.display = '';
+    }
+  } catch(_) { $('#printContingencySection').style.display = 'none'; }
+
+  window.print();
+}

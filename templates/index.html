@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Endurance Race Planner</title>
+  <title>OM Racing — Endurance Strategy Planner</title>
   <link rel="icon" type="image/x-icon" href="/static/favicon.ico" />
   <link rel="stylesheet" href="/static/style.css" />
 </head>
@@ -11,13 +11,15 @@
   <header>
     <div class="header-inner">
       <div class="logo">
-        <span class="logo-icon">⬡</span>
-        <span class="logo-text">ENDURANCE RACE PLANNER</span>
+        <img src="/static/om-logo.png" alt="OM Racing" style="height:30px;opacity:0.9;" onerror="this.style.display='none'" />
+        <span class="logo-text" style="color:var(--accent);">OM RACING</span>
+        <span class="logo-text" style="color:var(--text-dim);font-weight:400;">STRATEGY</span>
       </div>
       <nav class="tab-nav" id="mainNav">
         <button class="tab-btn active" data-tab="setup">Setup</button>
         <button class="tab-btn" data-tab="stint">Stint Plan</button>
         <button class="tab-btn" data-tab="live">Live Mode</button>
+        <button class="tab-btn" data-tab="timeline">Timeline</button>
         <button class="tab-btn" data-tab="laps">Laps</button>
         <button class="tab-btn" data-tab="debrief">Debrief</button>
         <button class="tab-btn" data-tab="export">Export</button>
@@ -28,6 +30,10 @@
         </select>
         <span class="plan-id-display"></span>
         <button class="btn-ghost" id="deletePlanBtn" title="Delete plan">✕</button>
+      </div>
+      <div class="auth-trigger">
+        <span class="auth-team-badge" id="authTeamBadge" style="display:none"></span>
+        <button class="btn-auth" id="authBtn">Sign In</button>
       </div>
     </div>
   </header>
@@ -397,7 +403,88 @@
       </div>
     </section>
 
+    <!-- ======= TIMELINE TAB ======= -->
+    <section id="tab-timeline" class="tab-section">
+      <div class="timeline-container">
+        <div class="timeline-header-row">
+          <h2 class="section-title" style="margin:0">Race Timeline</h2>
+          <button class="btn-print" onclick="triggerPrint()">&#128438; Print Strategy Sheet</button>
+        </div>
+        <div id="timelineChart">
+          <p class="empty-state">Calculate a strategy first to see the timeline.</p>
+        </div>
+      </div>
+    </section>
+
+    <!-- ======= PRINT TAB (print-only) ======= -->
+    <section id="tab-print" class="tab-section">
+      <div class="print-sheet" id="printSheet">
+        <div class="print-header">
+          <img src="/static/om-logo.png" class="print-logo" alt="OM Racing" onerror="this.style.display='none'" />
+          <div>
+            <div class="print-title" id="printTitle">RACE STRATEGY</div>
+            <div class="print-subtitle" id="printSubtitle"></div>
+          </div>
+          <div style="margin-left:auto;font-size:0.75rem;color:#888" id="printDate"></div>
+        </div>
+        <div class="print-section">
+          <div class="print-section-title">Race Parameters</div>
+          <div class="print-params-grid" id="printParams"></div>
+        </div>
+        <div class="print-section">
+          <div class="print-section-title">Stint Schedule</div>
+          <table class="print-stint-table" id="printStintTable">
+            <thead><tr>
+              <th>#</th><th>Driver</th><th>Laps</th><th>Pit Lap</th>
+              <th>Fuel Load</th><th>Mode</th><th>Tire</th>
+            </tr></thead>
+            <tbody id="printStintBody"></tbody>
+          </table>
+        </div>
+        <div class="print-section" id="printContingencySection">
+          <div class="print-section-title">Contingency Plans</div>
+          <div class="print-contingency-row" id="printContingencies"></div>
+        </div>
+        <div class="print-footer">
+          <span>Operation Motorsport Racing — Endurance Strategy Planner</span>
+          <span id="printFooterPlan"></span>
+        </div>
+      </div>
+    </section>
+
   </main>
+
+  <!-- ======= AUTH MODAL ======= -->
+  <div class="auth-overlay" id="authOverlay">
+    <div class="auth-modal">
+      <h2>&#9671; TEAM ACCESS</h2>
+      <div class="auth-tabs">
+        <button class="auth-tab-btn active" id="authTabLogin" onclick="switchAuthTab('login')">Sign In</button>
+        <button class="auth-tab-btn" id="authTabRegister" onclick="switchAuthTab('register')">Register Team</button>
+      </div>
+      <!-- Login form -->
+      <div id="authFormLogin">
+        <div class="auth-form">
+          <label>Email<input type="email" id="loginEmail" placeholder="you@team.com" /></label>
+          <label>Password<input type="password" id="loginPassword" placeholder="••••••••" /></label>
+          <div class="auth-error" id="loginError"></div>
+          <button class="auth-submit" onclick="doLogin()">SIGN IN</button>
+        </div>
+      </div>
+      <!-- Register form -->
+      <div id="authFormRegister" style="display:none">
+        <div class="auth-form">
+          <label>Team Name<input type="text" id="regTeam" placeholder="e.g. Operation Motorsport" /></label>
+          <label>Your Name<input type="text" id="regName" placeholder="e.g. Richard Davenport" /></label>
+          <label>Email<input type="email" id="regEmail" placeholder="you@team.com" /></label>
+          <label>Password<input type="password" id="regPassword" placeholder="Min 8 characters" /></label>
+          <div class="auth-error" id="registerError"></div>
+          <button class="auth-submit" onclick="doRegister()">CREATE TEAM</button>
+        </div>
+      </div>
+      <button class="btn-ghost" style="width:100%;margin-top:0.75rem;font-size:0.8rem" onclick="closeAuth()">Cancel</button>
+    </div>
+  </div>
 
   <!-- Pit Wall Overlay -->
   <div id="pitWallOverlay" class="pit-wall-overlay" style="display:none">

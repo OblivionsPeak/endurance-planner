@@ -104,10 +104,11 @@ class BridgeThread(threading.Thread):
         self.log(f'Plan ID: {plan_id}  |  Driver: {driver or "(any)"}')
         self.set_status('connecting')
 
-        last_lap_logged       = 0
-        last_telemetry_t      = 0.0
+        last_lap_logged        = 0
+        last_telemetry_t       = 0.0
         last_competitor_sync_t = 0.0
-        session_info_sent     = False
+        session_info_sent      = False
+        prev_on_track          = None   # for pit-entry/exit detection
 
         while not self._stop_evt.is_set():
             try:
@@ -226,6 +227,29 @@ class BridgeThread(threading.Thread):
                     except requests.RequestException as e:
                         self.log(f'  → ✗ {e}')
                     last_lap_logged = lap_completed
+
+                # ── Pit entry / exit stopwatch ──────────────────────────
+                if prev_on_track is not None and prev_on_track != is_on_track:
+                    try:
+                        if not is_on_track:
+                            # Entered pit lane
+                            requests.post(
+                                f'{base}/api/plans/{plan_id}/pit_stop/entry',
+                                json={'lap': current_lap, 'session_time_s': round(session_time, 1)},
+                                timeout=3,
+                            )
+                            self.log(f'🔧 Pit entry — lap {current_lap}')
+                        else:
+                            # Exited pit lane
+                            requests.post(
+                                f'{base}/api/plans/{plan_id}/pit_stop/exit',
+                                json={'session_time_s': round(session_time, 1)},
+                                timeout=3,
+                            )
+                            self.log(f'✓ Pit exit — lap {current_lap}')
+                    except requests.RequestException:
+                        pass
+                prev_on_track = is_on_track
 
             except Exception as e:
                 self.log(f'Error: {e}')
