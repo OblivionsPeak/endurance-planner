@@ -1104,3 +1104,157 @@ table.stint-table tr.last-stint td { opacity: 0.6; }
     gap: 0.4rem;
   }
 }
+
+/* ===== PIT WINDOW SECTION ===== */
+.pit-window-section {
+  margin-top: 0.6rem;
+}
+.pit-window-label {
+  font-size: 0.65rem;
+  letter-spacing: 0.1em;
+  color: var(--text-dim);
+  text-transform: uppercase;
+  margin-bottom: 0.4rem;
+}
+.pit-window-row {
+  display: flex;
+  gap: 0.5rem;
+}
+.pw-win-cell {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  flex: 1;
+  padding: 0.4rem 0.5rem;
+  border-radius: var(--radius);
+  background: var(--bg3);
+  border: 1px solid var(--border);
+  gap: 0.1rem;
+}
+.pw-win-cell.pw-active      { border-color: var(--green); background: rgba(62,207,142,0.1); }
+.pw-win-cell.pw-active-red  { border-color: var(--red);   background: rgba(200,25,46,0.12); }
+.pw-win-icon { font-size: 0.75rem; color: var(--text-dim); }
+.pw-win-val  { font-size: 0.9rem; font-weight: 700; color: var(--text); }
+.pw-win-lbl  { font-size: 0.65rem; color: var(--text-dim); }
+.pit-window-status-bar {
+  height: 4px;
+  background: var(--bg3);
+  border-radius: 2px;
+  margin-top: 0.4rem;
+  overflow: hidden;
+}
+.pit-window-fill           { height: 100%; border-radius: 2px; transition: background 0.3s; }
+.pw-fill-green  { background: var(--green); width: 60%; }
+.pw-fill-yellow { background: var(--yellow); width: 85%; }
+.pw-fill-red    { background: var(--red); width: 100%; }
+
+/* ===== ACTUAL FUEL DELTA ===== */
+.actual-fuel-cell { white-space: nowrap; }
+.actual-fuel-val  { font-variant-numeric: tabular-nums; margin-right: 0.3rem; }
+.actual-fuel-delta { font-size: 0.72rem; font-weight: 600; }
+.delta-ok    { color: var(--green); }
+.delta-over  { color: var(--yellow); }
+.delta-under { color: var(--red); }
+.actual-fuel-inp {
+  width: 70px;
+  background: var(--bg3);
+  border: 1px solid var(--border);
+  color: var(--text);
+  border-radius: var(--radius);
+  padding: 0.2rem 0.4rem;
+  font-size: 0.8rem;
+}
+.actual-fuel-inp:focus { outline: none; border-color: var(--accent); }
+
+/* ===== SWAP BUTTONS ===== */
+.swap-cell { text-align: center; white-space: nowrap; }
+.swap-btn {
+  background: none;
+  border: 1px solid var(--border);
+  color: var(--text-dim);
+  border-radius: var(--radius);
+  width: 22px;
+  height: 22px;
+  font-size: 0.75rem;
+  cursor: pointer;
+  padding: 0;
+  line-height: 1;
+  transition: border-color 0.15s, color 0.15s;
+}
+.swap-btn:hover { border-color: var(--accent); color: var(--accent); }
+
+/* ===== STINT ACTION BAR ===== */
+.stint-action-bar {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  margin-bottom: 0.75rem;
+  flex-wrap: wrap;
+}
+.optimize-result {
+  font-size: 0.85rem;
+  color: var(--text-dim);
+  flex: 1;
+}
+.optimize-info {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+}
+.btn-sm {
+  padding: 0.2rem 0.6rem;
+  font-size: 0.78rem;
+}
+
+/* ===== WHAT-IF CARD ===== */
+.whatif-result {
+  margin-top: 0.75rem;
+}
+.whatif-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem 1rem;
+  margin-bottom: 0.5rem;
+  font-size: 0.8rem;
+  color: var(--text-dim);
+}
+.whatif-meta strong { color: var(--text); }
+.whatif-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.8rem;
+}
+.whatif-table th {
+  text-align: left;
+  padding: 0.25rem 0.4rem;
+  border-bottom: 1px solid var(--border);
+  color: var(--text-dim);
+  font-weight: 600;
+  font-size: 0.7rem;
+  text-transform: uppercase;
+}
+.whatif-table td {
+  padding: 0.25rem 0.4rem;
+  border-bottom: 1px solid var(--border);
+}
+.whatif-table .last-stint td { color: var(--green); }
+
+/* ===== CSV IMPORT ===== */
+.import-bar {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  margin-bottom: 0.75rem;
+}
+.import-label {
+  cursor: pointer;
+  padding: 0.25rem 0.6rem;
+  font-size: 0.8rem;
+  white-space: nowrap;
+}
+.import-label:hover { border-color: var(--accent); color: var(--accent); }
+.import-hint {
+  font-size: 0.72rem;
+  color: var(--text-dim);
+}

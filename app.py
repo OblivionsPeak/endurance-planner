@@ -4,6 +4,7 @@ import math
 import psycopg2
 import psycopg2.extras
 from datetime import datetime
+from itertools import permutations
 from flask import Flask, render_template, request, jsonify, g
 from dotenv import load_dotenv
 
@@ -96,6 +97,7 @@ def init_db():
     cur.execute("ALTER TABLE stints ADD COLUMN IF NOT EXISTS tire_set TEXT")
     cur.execute("ALTER TABLE stints ADD COLUMN IF NOT EXISTS tire_age_laps INTEGER")
     cur.execute("ALTER TABLE stints ADD COLUMN IF NOT EXISTS tire_wear_pct FLOAT")
+    cur.execute("ALTER TABLE stints ADD COLUMN IF NOT EXISTS actual_fuel_added FLOAT")
     cur.execute("""
         CREATE TABLE IF NOT EXISTS lap_times (
             id          SERIAL PRIMARY KEY,
@@ -383,6 +385,122 @@ def recalculate(plan_id):
 
 
 # ---------------------------------------------------------------------------
+# Routes — API: optimizer
+# ---------------------------------------------------------------------------
+
+@app.route('/api/plans/<int:plan_id>/optimize', methods=['POST'])
+def optimize_rotation(plan_id):
+    """
+    Try every permutation of driver order, return the rotation that either
+    minimises pit stops ('minimize_pits') or most evenly distributes driving
+    hours ('balance_hours').  Only the ordering changes — no DB write.
+    """
+    row = db_exec("SELECT * FROM race_plans WHERE id=%s", (plan_id,)).fetchone()
+    if not row:
+        return jsonify({'error': 'Not found'}), 404
+
+    config  = json.loads(row['config'])
+    drivers = list(_get_drivers(plan_id))   # list of dicts
+    data    = request.get_json() or {}
+    mode    = data.get('mode', 'minimize_pits')
+
+    if len(drivers) < 2:
+        return jsonify({'error': 'Need at least 2 drivers to optimise'}), 400
+
+    best_result  = None
+    best_score   = float('inf')
+    best_perm    = None
+
+    for perm in permutations(range(len(drivers))):
+        ordered = [drivers[i] for i in perm]
+        result  = calculate_strategy(config, ordered)
+
+        if mode == 'minimize_pits':
+            score = result['pit_stops']
+        else:  # balance_hours
+            # Variance of hours driven per driver
+            hours = {}
+            for s in result['stints']:
+                key = s['driver_name']
+                lap_s = (drivers[perm[list(perm).index(
+                    next((i for i, d in enumerate(drivers) if d['name'] == key), 0)
+                )]].get('target_lap_s') or config.get('lap_time_s', 90))
+                hours[key] = hours.get(key, 0) + s['laps_in_stint'] * lap_s / 3600
+            vals  = list(hours.values())
+            avg   = sum(vals) / len(vals) if vals else 0
+            score = sum((v - avg) ** 2 for v in vals)
+
+        if score < best_score:
+            best_score  = score
+            best_result = result
+            best_perm   = list(perm)
+
+    best_order = [drivers[i]['name'] for i in best_perm]
+    return jsonify({
+        'mode':        mode,
+        'best_order':  best_order,
+        'pit_stops':   best_result['pit_stops'],
+        'total_stints': best_result['total_stints'],
+        'stints':      best_result['stints'],
+    })
+
+
+# ---------------------------------------------------------------------------
+# Routes — API: lap time bulk import
+# ---------------------------------------------------------------------------
+
+@app.route('/api/plans/<int:plan_id>/laps/import', methods=['POST'])
+def import_laps(plan_id):
+    """
+    Bulk-insert lap times from a parsed array.
+    Body: { "laps": [ {lap_num, time_s, driver_name?, note?}, ... ] }
+    Returns count of rows inserted.
+    """
+    row = db_exec("SELECT id FROM race_plans WHERE id=%s", (plan_id,)).fetchone()
+    if not row:
+        return jsonify({'error': 'Not found'}), 404
+
+    data = request.get_json() or {}
+    laps = data.get('laps', [])
+    if not laps:
+        return jsonify({'error': 'No laps provided'}), 400
+
+    now      = datetime.utcnow().isoformat()
+    inserted = 0
+    for lap in laps:
+        lap_num = lap.get('lap_num')
+        time_s  = lap.get('time_s')
+        if not lap_num or not time_s or float(time_s) <= 0:
+            continue
+
+        driver_id = lap.get('driver_id')
+        if not driver_id and lap.get('driver_name'):
+            name    = lap['driver_name'].strip().lower()
+            d_row   = db_exec(
+                "SELECT id FROM drivers WHERE plan_id=%s AND LOWER(name)=%s",
+                (plan_id, name)
+            ).fetchone()
+            if not d_row:
+                d_row = db_exec(
+                    "SELECT id FROM drivers WHERE plan_id=%s AND LOWER(name) LIKE %s",
+                    (plan_id, f'%{name}%')
+                ).fetchone()
+            if d_row:
+                driver_id = d_row['id']
+
+        db_exec(
+            """INSERT INTO lap_times (plan_id, lap_num, driver_id, time_s, note, logged_at)
+               VALUES (%s, %s, %s, %s, %s, %s)""",
+            (plan_id, int(lap_num), driver_id, float(time_s),
+             lap.get('note', ''), now)
+        )
+        inserted += 1
+
+    db_commit()
+    return jsonify({'inserted': inserted}), 201
+
+
+# ---------------------------------------------------------------------------
 # Routes — API: live mode
 # ---------------------------------------------------------------------------
 
@@ -390,7 +508,8 @@ def recalculate(plan_id):
 def patch_stint(plan_id, stint_id):
     """Update tire data (and optionally completion state) for a single stint."""
     data    = request.get_json() or {}
-    allowed = ('driver_id', 'tire_compound', 'tire_set', 'tire_age_laps', 'tire_wear_pct', 'is_complete', 'actual_end_lap')
+    allowed = ('driver_id', 'tire_compound', 'tire_set', 'tire_age_laps', 'tire_wear_pct',
+               'is_complete', 'actual_end_lap', 'actual_fuel_added')
     fields  = []
     values  = []
     for key in allowed:
@@ -529,17 +648,34 @@ def live_status(plan_id):
     laps_of_fuel       = (fuel_remaining / effective_fpl) if effective_fpl > 0 else 0
     fuel_pct           = round((fuel_remaining / fuel_capacity) * 100) if fuel_capacity > 0 else 0
 
+    # Pit window: earliest = now (always can pit), optimal = planned pit_lap,
+    # last_safe = last lap where we still have >=1 lap of fuel buffer after pitting
+    planned_pit    = current_stint.get('pit_lap')
+    last_safe_lap  = current_lap + max(int(math.floor(laps_of_fuel)) - 1, 0)
+    pit_window_status = 'green'
+    if planned_pit:
+        laps_past_opt = current_lap - planned_pit
+        if laps_past_opt > 0:
+            pit_window_status = 'red'     # past optimal pit lap
+        elif laps_until_pit <= 2:
+            pit_window_status = 'yellow'  # entering pit window
+        else:
+            pit_window_status = 'green'
+
     return jsonify({
-        'status':           'racing',
-        'current_lap':      current_lap,
-        'current_stint':    dict(current_stint),
-        'next_stint':       dict(next_stint) if next_stint else None,
-        'laps_until_pit':   laps_until_pit,
-        'mins_until_pit':   mins_until_pit,
-        'alert':            laps_until_pit <= 3 and laps_until_pit > 0,
-        'fuel_remaining_l': round(fuel_remaining, 1),
-        'laps_of_fuel':     round(laps_of_fuel, 1),
-        'fuel_pct':         fuel_pct,
+        'status':             'racing',
+        'current_lap':        current_lap,
+        'current_stint':      dict(current_stint),
+        'next_stint':         dict(next_stint) if next_stint else None,
+        'laps_until_pit':     laps_until_pit,
+        'mins_until_pit':     mins_until_pit,
+        'alert':              laps_until_pit <= 3 and laps_until_pit > 0,
+        'fuel_remaining_l':   round(fuel_remaining, 1),
+        'laps_of_fuel':       round(laps_of_fuel, 1),
+        'fuel_pct':           fuel_pct,
+        'pit_window_optimal': planned_pit,
+        'pit_window_last':    last_safe_lap,
+        'pit_window_status':  pit_window_status,
     })
 
 
@@ -588,6 +724,7 @@ def _get_stints(plan_id):
         """SELECT s.id, s.stint_num, s.start_lap, s.end_lap, s.pit_lap,
                   s.fuel_load, s.fuel_mode, s.is_complete, s.actual_end_lap,
                   s.tire_compound, s.tire_set, s.tire_age_laps, s.tire_wear_pct,
+                  s.actual_fuel_added,
                   s.driver_id,
                   d.name AS driver_name, d.color AS driver_color
            FROM stints s

@@ -187,6 +187,11 @@
 
       <div id="minTimeWarnings" class="min-time-warnings" style="display:none"></div>
 
+      <div class="stint-action-bar">
+        <button class="btn-secondary" id="optimizeBtn">⚙ Optimize Rotation</button>
+        <div id="optimizeResult" class="optimize-result" style="display:none"></div>
+      </div>
+
       <div id="stintTableWrap">
         <p class="empty-state">Configure your race in Setup, then click "Calculate Strategy".</p>
       </div>
@@ -227,6 +232,24 @@
           </div>
         </div>
 
+        <div class="card whatif-card">
+          <h3>What-if Calculator</h3>
+          <p class="form-hint" style="margin-bottom:0.75rem">Simulate from any lap without changing the plan.</p>
+          <div class="form-group">
+            <label>From Lap</label>
+            <input type="number" id="whatifLap" min="1" value="1" />
+          </div>
+          <div class="form-group">
+            <label>Fuel Remaining</label>
+            <div class="input-row">
+              <input type="number" id="whatifFuel" min="0" step="0.1" placeholder="gal" />
+              <span class="unit">gal</span>
+            </div>
+          </div>
+          <button class="btn-secondary" id="whatifBtn">Calculate</button>
+          <div id="whatifResult" class="whatif-result"></div>
+        </div>
+
         <div class="card">
           <h3>Log Event</h3>
           <div class="form-group">
@@ -261,6 +284,13 @@
 
         <div class="card laps-input-card">
           <h3>Log Lap</h3>
+          <div class="import-bar">
+            <label class="btn-ghost import-label" title="Import laps from CSV file">
+              ↑ Import CSV
+              <input type="file" id="importCsvInput" accept=".csv,.txt" style="display:none" />
+            </label>
+            <span class="import-hint">Columns: Lap, Time (m:ss.ttt), Driver (opt), Note (opt)</span>
+          </div>
           <div class="form-group">
             <label>Driver</label>
             <select id="lapDriver">

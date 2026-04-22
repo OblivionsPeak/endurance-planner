@@ -412,8 +412,10 @@ function renderStintTable(plan) {
           <th>Stint Time</th>
           <th>Pit Lap</th>
           <th>Fuel Load</th>
+          <th>Actual Fuel</th>
           <th>Fuel/Lap</th>
           <th>Fuel %</th>
+          <th title="Swap this driver with adjacent stint">⇅</th>
         </tr>
       </thead>
       <tbody>
@@ -480,6 +482,19 @@ function renderStintTable(plan) {
         </td>
         <td>${pitCell}</td>
         <td>${fmt(s.fuel_load, 1)} gal</td>
+        <td class="actual-fuel-cell">
+          ${s.actual_fuel_added != null
+            ? (() => {
+                const delta = s.actual_fuel_added - s.fuel_load;
+                const cls   = Math.abs(delta) < 0.5 ? 'delta-ok' : delta > 0 ? 'delta-over' : 'delta-under';
+                return `<span class="actual-fuel-val">${fmt(s.actual_fuel_added, 1)} gal</span>
+                        <span class="actual-fuel-delta ${cls}">${delta >= 0 ? '+' : ''}${fmt(delta, 1)}</span>`;
+              })()
+            : `<input type="number" class="actual-fuel-inp" data-stint-id="${s.id}"
+                 value="" placeholder="actual" step="0.1" min="0"
+                 title="Actual fuel added at this pit stop" />`
+          }
+        </td>
         <td${hasDriverFpl ? ' title="Driver\'s own fuel rate"' : ''}>
           <span${hasDriverFpl ? ' class="driver-target-tag"' : ''} style="font-variant-numeric:tabular-nums">${fmt(dFpl, 3)}</span>
         </td>
@@ -488,6 +503,14 @@ function renderStintTable(plan) {
             <div class="fuel-bar-fill" style="width:${fuelPct}%"></div>
           </div>
           <span style="font-size:0.7rem;color:var(--text-dim)">${fuelPct}%</span>
+        </td>
+        <td class="swap-cell">
+          ${s.stint_num > 1
+            ? `<button class="swap-btn" data-stint="${s.stint_num}" data-dir="up" title="Swap driver with stint above">↑</button>`
+            : ''}
+          ${!isLast
+            ? `<button class="swap-btn" data-stint="${s.stint_num}" data-dir="down" title="Swap driver with stint below">↓</button>`
+            : ''}
         </td>
       </tr>
     `;
@@ -509,6 +532,56 @@ function renderStintTable(plan) {
         tire_set:       set || null,
         tire_age_laps:  age,
       });
+    });
+  });
+
+  // Actual fuel added — save when user enters a value and blurs/presses Enter
+  $$('.actual-fuel-inp', wrap).forEach(inp => {
+    const save = async () => {
+      const val = parseFloat(inp.value);
+      if (isNaN(val) || val < 0) return;
+      const sid = inp.dataset.stintId;
+      await fetch(`/api/plans/${plan.id}/stints/${sid}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ actual_fuel_added: val }),
+      });
+      // Reload plan to show delta
+      const r = await fetch(`/api/plans/${plan.id}`);
+      const updated = await r.json();
+      state.activePlan = updated;
+      renderStintTable(updated);
+    };
+    inp.addEventListener('blur', save);
+    inp.addEventListener('keydown', e => { if (e.key === 'Enter') save(); });
+  });
+
+  // Stint swap — exchange the drivers of two adjacent stints
+  $$('.swap-btn', wrap).forEach(btn => {
+    btn.addEventListener('click', async () => {
+      const stintNum  = parseInt(btn.dataset.stint);
+      const dir       = btn.dataset.dir;
+      const otherNum  = dir === 'up' ? stintNum - 1 : stintNum + 1;
+      const stintA    = stints.find(s => s.stint_num === stintNum);
+      const stintB    = stints.find(s => s.stint_num === otherNum);
+      if (!stintA || !stintB) return;
+
+      // Swap driver IDs between the two stints
+      await fetch(`/api/plans/${plan.id}/stints/${stintA.id}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ driver_id: stintB.driver_id }),
+      });
+      await fetch(`/api/plans/${plan.id}/stints/${stintB.id}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ driver_id: stintA.driver_id }),
+      });
+
+      const r = await fetch(`/api/plans/${plan.id}`);
+      const updated = await r.json();
+      state.activePlan = updated;
+      renderStintTable(updated);
     });
   });
 
@@ -547,7 +620,9 @@ function renderStintTable(plan) {
   stints.forEach(s => {
     if (s.driver_id != null) {
       const laps = s.end_lap - s.start_lap + 1;
-      driverHours[s.driver_id] = (driverHours[s.driver_id] || 0) + (laps * lapTimeSec / 3600);
+      const d    = driversMap[s.driver_id];
+      const lapS = (d && d.target_lap_s > 0) ? d.target_lap_s : globalLapSec;
+      driverHours[s.driver_id] = (driverHours[s.driver_id] || 0) + (laps * lapS / 3600);
     }
   });
   const minWarnings = (plan.drivers || []).filter(d =>
@@ -874,6 +949,27 @@ async function updateLiveStatus() {
       <div class="live-stat-row">
         <span class="live-stat-label">Next Driver</span>
         <span class="live-stat-val"><span class="driver-dot" style="background:${next.driver_color||'#4fc3f7'}"></span>${next.driver_name || '—'}</span>
+      </div>
+      ` : ''}
+      ${s.pit_lap ? `
+      <div class="live-stat-divider"></div>
+      <div class="pit-window-section">
+        <div class="pit-window-label">PIT WINDOW</div>
+        <div class="pit-window-row">
+          <span class="pw-win-cell pw-win-optimal ${data.pit_window_status === 'green' ? 'pw-active' : ''}">
+            <span class="pw-win-icon">◎</span>
+            <span class="pw-win-val">Lap ${data.pit_window_optimal}</span>
+            <span class="pw-win-lbl">Optimal</span>
+          </span>
+          <span class="pw-win-cell pw-win-last ${data.pit_window_status === 'red' ? 'pw-active pw-active-red' : ''}">
+            <span class="pw-win-icon">⚠</span>
+            <span class="pw-win-val">Lap ${data.pit_window_last}</span>
+            <span class="pw-win-lbl">Last Safe</span>
+          </span>
+        </div>
+        <div class="pit-window-status-bar">
+          <div class="pit-window-fill pw-fill-${data.pit_window_status}"></div>
+        </div>
       </div>
       ` : ''}
     </div>
@@ -1256,6 +1352,283 @@ function renderExport(plan) {
 }
 
 // ---------------------------------------------------------------------------
+// What-if Calculator (pure client-side)
+// ---------------------------------------------------------------------------
+function calcWhatIf() {
+  const plan = state.activePlan;
+  if (!plan || !plan.stints?.length) return;
+
+  const fromLap  = parseInt($('#whatifLap').value) || 1;
+  const fuelLeft = parseFloat($('#whatifFuel').value);
+  const result   = $('#whatifResult');
+
+  const config      = plan.config || {};
+  const fuelCap     = config.fuel_capacity_l || 18;
+  const globalLapS  = config.lap_time_s || 90;
+  const globalFpl   = (config.fuel_per_lap_l || 0.92) * (MODE_MULT[config.fuel_mode] || 1);
+  const raceDurS    = (config.race_duration_hrs || 6) * 3600;
+  const pitLossS    = config.pit_loss_s || 35;
+  const maxContHrs  = config.max_continuous_hrs || 2.5;
+  const driversMap  = {};
+  (plan.drivers || []).forEach(d => { driversMap[d.id] = d; });
+
+  // Determine which stint fromLap is in and which driver index that corresponds to
+  const stints = plan.stints || [];
+  const curStint = stints.find(s => fromLap >= s.start_lap && fromLap <= s.end_lap);
+  if (!curStint) {
+    result.innerHTML = '<span class="msg-error">Lap not found in plan stints.</span>';
+    return;
+  }
+
+  // Estimate elapsed race time up to fromLap
+  let elapsedS = 0;
+  for (const s of stints) {
+    if (s.start_lap >= fromLap) break;
+    const d     = driversMap[s.driver_id];
+    const lapS  = (d && d.target_lap_s > 0) ? d.target_lap_s : globalLapS;
+    const laps  = Math.min(s.end_lap, fromLap - 1) - s.start_lap + 1;
+    if (laps > 0) elapsedS += laps * lapS;
+  }
+
+  // Find driver rotation index starting from current stint
+  const driverList = plan.drivers || [];
+  const curDriverIdx = driverList.findIndex(d => d.id === curStint.driver_id);
+  const nDrivers = driverList.length || 1;
+
+  // Run forward simulation
+  const projStints = [];
+  let currentLap  = fromLap;
+  let totalTimeS  = elapsedS;
+  let driverIdx   = curDriverIdx >= 0 ? curDriverIdx : 0;
+  let stintNum    = curStint.stint_num;
+  // Remaining fuel in current tank
+  const lapsIntoCurStint = fromLap - curStint.start_lap;
+  const curD   = driversMap[curStint.driver_id];
+  const curFpl = isNaN(fuelLeft)
+    ? (() => {
+        const d = curD && curD.target_fpl > 0 ? curD.target_fpl : (config.fuel_per_lap_l || 0.92);
+        return d * (MODE_MULT[config.fuel_mode] || 1);
+      })()
+    : null;
+  const usableFuelNow = isNaN(fuelLeft)
+    ? Math.max((curStint.fuel_load || 0) - lapsIntoCurStint * curFpl, 0)
+    : fuelLeft;
+
+  // First "virtual" stint: remaining laps on current tank
+  const firstDriver = driverList[driverIdx % nDrivers];
+  const firstLapS   = (firstDriver && firstDriver.target_lap_s > 0) ? firstDriver.target_lap_s : globalLapS;
+  const firstFpl    = (firstDriver && firstDriver.target_fpl > 0)
+    ? firstDriver.target_fpl * (MODE_MULT[config.fuel_mode] || 1)
+    : globalFpl;
+  const firstFuelLaps = firstFpl > 0 ? Math.floor(usableFuelNow / firstFpl) : 999;
+  const firstFatigue  = Math.floor(maxContHrs * 3600 / firstLapS);
+  const firstRemain   = Math.floor((raceDurS - totalTimeS) / firstLapS);
+  const firstStintLaps = Math.max(Math.min(firstFuelLaps, firstFatigue, firstRemain), 0);
+
+  if (firstStintLaps > 0) {
+    projStints.push({
+      stint_num:   stintNum,
+      driver_name: firstDriver?.name || '—',
+      driver_color: firstDriver?.color || '#4fc3f7',
+      start_lap:   currentLap,
+      end_lap:     currentLap + firstStintLaps - 1,
+      fuel_load:   Math.min(usableFuelNow, fuelCap),
+      is_last:     firstRemain <= firstStintLaps,
+    });
+    totalTimeS  += firstStintLaps * firstLapS;
+    currentLap  += firstStintLaps;
+    stintNum++;
+    driverIdx++;
+  }
+
+  // Remaining stints from full tanks
+  while (true) {
+    const d       = driverList[driverIdx % nDrivers];
+    const lapS    = (d && d.target_lap_s > 0) ? d.target_lap_s : globalLapS;
+    const fpl     = (d && d.target_fpl > 0)
+      ? d.target_fpl * (MODE_MULT[config.fuel_mode] || 1)
+      : globalFpl;
+    const usable    = fuelCap - fpl;
+    const fuelLaps  = fpl > 0 ? Math.floor(usable / fpl) : 999;
+    const fatigue   = Math.floor(maxContHrs * 3600 / lapS);
+    const remaining = Math.floor((raceDurS - totalTimeS) / lapS);
+    if (remaining <= 0) break;
+    const stintLaps = Math.min(fuelLaps, fatigue, remaining);
+    const isLast    = remaining <= stintLaps;
+    projStints.push({
+      stint_num:    stintNum,
+      driver_name:  d?.name || '—',
+      driver_color: d?.color || '#4fc3f7',
+      start_lap:    currentLap,
+      end_lap:      currentLap + stintLaps - 1,
+      fuel_load:    Math.min(stintLaps * fpl + fpl, fuelCap),
+      is_last:      isLast,
+    });
+    totalTimeS += stintLaps * lapS;
+    currentLap += stintLaps;
+    stintNum++;
+    driverIdx++;
+  }
+
+  if (!projStints.length) {
+    result.innerHTML = '<span style="color:var(--green)">Race appears complete from this lap.</span>';
+    return;
+  }
+
+  const pitCount  = projStints.filter(s => !s.is_last).length;
+  const totalLaps = projStints[projStints.length - 1]?.end_lap || fromLap;
+
+  result.innerHTML = `
+    <div class="whatif-meta">
+      <span>From lap <strong>${fromLap}</strong></span>
+      <span><strong>${projStints.length}</strong> stints remaining</span>
+      <span><strong>${pitCount}</strong> more pit stops</span>
+      <span>Finish ~lap <strong>${totalLaps}</strong></span>
+    </div>
+    <table class="whatif-table">
+      <thead><tr><th>#</th><th>Driver</th><th>Laps</th><th>Fuel</th></tr></thead>
+      <tbody>
+        ${projStints.map(s => `
+          <tr class="${s.is_last ? 'last-stint' : ''}">
+            <td>${s.stint_num}</td>
+            <td><span class="driver-dot" style="background:${s.driver_color}"></span>${s.driver_name}</td>
+            <td>${s.start_lap}–${s.end_lap} (${s.end_lap - s.start_lap + 1})</td>
+            <td>${fmt(s.fuel_load, 1)} gal${s.is_last ? ' <span class="no-pit-badge">FINISH</span>' : ''}</td>
+          </tr>`).join('')}
+      </tbody>
+    </table>
+  `;
+}
+
+// ---------------------------------------------------------------------------
+// Rotation Optimizer
+// ---------------------------------------------------------------------------
+async function optimizeRotation() {
+  const plan = state.activePlan;
+  if (!plan) return;
+
+  const resultEl = $('#optimizeResult');
+  resultEl.style.display = 'block';
+  resultEl.innerHTML = '<span style="color:var(--text-dim)">Calculating…</span>';
+
+  // Ask user for mode
+  const mode = confirm(
+    'Choose optimization goal:\n\nOK = Minimize pit stops\nCancel = Balance driver hours'
+  ) ? 'minimize_pits' : 'balance_hours';
+
+  try {
+    const res  = await fetch(`/api/plans/${plan.id}/optimize`, {
+      method:  'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body:    JSON.stringify({ mode }),
+    });
+    if (!res.ok) {
+      const err = await res.json();
+      resultEl.innerHTML = `<span class="msg-error">${err.error || 'Optimization failed'}</span>`;
+      return;
+    }
+    const data = await res.json();
+    const orderStr = data.best_order.join(' → ');
+    resultEl.innerHTML = `
+      <div class="optimize-info">
+        <strong>Best order:</strong> ${orderStr}
+        &nbsp;|&nbsp; <strong>${data.pit_stops}</strong> pit stops
+        &nbsp;|&nbsp; <strong>${data.total_stints}</strong> stints
+        <button class="btn-primary btn-sm" id="applyOptBtn">Apply this rotation</button>
+      </div>
+    `;
+
+    $('#applyOptBtn').addEventListener('click', async () => {
+      // Reorder driver list in setup form to match best_order, then recalculate
+      const driverRows    = $$('.driver-row');
+      const currentDrivers = buildDrivers();
+      const nameToDriver   = {};
+      currentDrivers.forEach((d, i) => { nameToDriver[d.name] = { ...d, row: driverRows[i] }; });
+
+      const list = $('#driverList');
+      list.innerHTML = '';
+      data.best_order.forEach(name => {
+        const d = nameToDriver[name];
+        if (d) addDriverRow(d);
+      });
+      // Add any drivers not in the optimized list (shouldn't happen, but safe)
+      currentDrivers.forEach(d => {
+        if (!data.best_order.includes(d.name)) addDriverRow(d);
+      });
+
+      resultEl.innerHTML = '<span style="color:var(--green)">Rotation applied — click Calculate Strategy to save.</span>';
+    });
+  } catch (err) {
+    resultEl.innerHTML = `<span class="msg-error">Error: ${err.message}</span>`;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// CSV Lap Import
+// ---------------------------------------------------------------------------
+function parseTimeToSec(str) {
+  str = str.trim();
+  // m:ss.ttt
+  const colonMatch = str.match(/^(\d+):(\d+(?:\.\d+)?)$/);
+  if (colonMatch) return parseFloat(colonMatch[1]) * 60 + parseFloat(colonMatch[2]);
+  // plain seconds
+  const numVal = parseFloat(str);
+  return isNaN(numVal) ? null : numVal;
+}
+
+async function importCsvLaps(file) {
+  if (!state.activePlan) {
+    alert('Load a plan first before importing laps.');
+    return;
+  }
+  const text = await file.text();
+  const lines = text.split(/\r?\n/).map(l => l.trim()).filter(l => l && !l.startsWith('#'));
+  if (!lines.length) return;
+
+  // Detect header row (first cell not a number)
+  let dataLines = lines;
+  if (isNaN(parseInt(lines[0].split(',')[0]))) {
+    dataLines = lines.slice(1);
+  }
+
+  const laps = [];
+  for (const line of dataLines) {
+    const cols = line.split(',').map(c => c.trim().replace(/^"|"$/g, ''));
+    const lapNum = parseInt(cols[0]);
+    const timeS  = parseTimeToSec(cols[1] || '');
+    if (!lapNum || !timeS) continue;
+    laps.push({
+      lap_num:     lapNum,
+      time_s:      timeS,
+      driver_name: cols[2] || null,
+      note:        cols[3] || null,
+    });
+  }
+
+  if (!laps.length) {
+    alert('No valid lap rows found. Expected format: Lap, Time (m:ss.ttt), Driver (opt), Note (opt)');
+    return;
+  }
+
+  const res = await fetch(`/api/plans/${state.activePlan.id}/laps/import`, {
+    method:  'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body:    JSON.stringify({ laps }),
+  });
+  if (!res.ok) {
+    alert('Import failed — server error.');
+    return;
+  }
+  const data = await res.json();
+  alert(`Imported ${data.inserted} laps successfully.`);
+
+  // Refresh lap times view
+  const updated = await (await fetch(`/api/plans/${state.activePlan.id}`)).json();
+  state.activePlan = updated;
+  renderLapTimes(updated);
+}
+
+// ---------------------------------------------------------------------------
 // Event wiring
 // ---------------------------------------------------------------------------
 function initEvents() {
@@ -1364,6 +1737,18 @@ function initEvents() {
       $('#currentLap').value = $('#pwCurrentLap').value;
       updateLiveStatus();
     }
+  });
+
+  // Optimize rotation
+  $('#optimizeBtn').addEventListener('click', optimizeRotation);
+
+  // What-if calculator
+  $('#whatifBtn').addEventListener('click', calcWhatIf);
+
+  // CSV import
+  $('#importCsvInput').addEventListener('change', function() {
+    if (this.files[0]) importCsvLaps(this.files[0]);
+    this.value = '';  // reset so same file can be re-imported
   });
 
   // Log event
