@@ -90,6 +90,8 @@ def init_db():
     """)
     # Tire data columns (added in migration — safe to run on existing DBs)
     cur.execute("ALTER TABLE drivers ADD COLUMN IF NOT EXISTS min_hours FLOAT DEFAULT 0")
+    cur.execute("ALTER TABLE drivers ADD COLUMN IF NOT EXISTS target_lap_s FLOAT")
+    cur.execute("ALTER TABLE drivers ADD COLUMN IF NOT EXISTS target_fpl FLOAT")
     cur.execute("ALTER TABLE stints ADD COLUMN IF NOT EXISTS tire_compound TEXT")
     cur.execute("ALTER TABLE stints ADD COLUMN IF NOT EXISTS tire_set TEXT")
     cur.execute("ALTER TABLE stints ADD COLUMN IF NOT EXISTS tire_age_laps INTEGER")
@@ -127,6 +129,10 @@ def calculate_strategy(config: dict, drivers: list) -> list:
     """
     Core math: given race config and driver list, return a list of stint dicts.
 
+    Each driver may supply target_lap_s and/or target_fpl to override the
+    global config values for their specific stints.  The race is modelled in
+    elapsed time so mixed lap-time drivers are handled correctly.
+
     config keys:
       race_duration_hrs, fuel_capacity_l, fuel_per_lap_l, lap_time_s,
       num_drivers, pit_loss_s, fuel_mode
@@ -135,76 +141,94 @@ def calculate_strategy(config: dict, drivers: list) -> list:
       { stint_num, driver_name, driver_id, start_lap, end_lap, pit_lap,
         fuel_load, fuel_mode, laps_in_stint }
     """
-    race_dur_s    = config['race_duration_hrs'] * 3600
-    lap_time_s    = config['lap_time_s']
-    fuel_capacity = config['fuel_capacity_l']
-    base_fpl      = config['fuel_per_lap_l']
-    pit_loss_s    = config.get('pit_loss_s', 30)
-    fuel_mode     = config.get('fuel_mode', 'normal')
+    race_dur_s         = config['race_duration_hrs'] * 3600
+    global_lap_s       = config['lap_time_s']
+    fuel_capacity      = config['fuel_capacity_l']
+    global_base_fpl    = config['fuel_per_lap_l']
+    fuel_mode          = config.get('fuel_mode', 'normal')
     max_continuous_hrs = config.get('max_continuous_hrs', 2.5)
 
-    multiplier    = FUEL_MODE_MULTIPLIERS.get(fuel_mode, 1.0)
-    fuel_per_lap  = base_fpl * multiplier
+    multiplier   = FUEL_MODE_MULTIPLIERS.get(fuel_mode, 1.0)
+    global_fpl   = global_base_fpl * multiplier
 
-    # usable laps per full tank (with safety buffer)
-    usable_fuel   = fuel_capacity - (fuel_per_lap * SAFETY_BUFFER_LAPS)
-    laps_per_tank = int(math.floor(usable_fuel / fuel_per_lap))
+    # Global summary stats (used for meta display, fall back to global values)
+    g_usable        = fuel_capacity - (global_fpl * SAFETY_BUFFER_LAPS)
+    laps_per_tank   = int(math.floor(g_usable / global_fpl)) if global_fpl > 0 else 999
+    g_fatigue_laps  = int(math.floor(max_continuous_hrs * 3600 / global_lap_s)) if global_lap_s > 0 else 999
+    laps_per_stint  = min(laps_per_tank, g_fatigue_laps)
 
-    # max laps per driver based on fatigue limit
-    max_stint_laps_fatigue = int(math.floor(max_continuous_hrs * 3600 / lap_time_s))
-
-    # actual laps per stint = min of tank range and fatigue limit
-    laps_per_stint = min(laps_per_tank, max_stint_laps_fatigue)
-
-    # total laps in race (approximate — race ends at time, not lap)
-    total_laps = int(math.floor(race_dur_s / lap_time_s))
-
-    stints = []
+    stints       = []
     current_lap  = 1
     stint_num    = 1
     driver_index = 0
+    total_time_s = 0.0
     n_drivers    = max(len(drivers), 1)
 
-    while current_lap <= total_laps:
-        remaining_laps = total_laps - current_lap + 1
-        stint_laps = min(laps_per_stint, remaining_laps)
+    while True:
+        driver = (drivers[driver_index % n_drivers]
+                  if drivers
+                  else {'name': f'Driver {(driver_index % n_drivers) + 1}',
+                        'id': None, 'color': '#4fc3f7',
+                        'target_lap_s': None, 'target_fpl': None})
+
+        # Per-driver lap time and fuel-per-lap (fall back to global if not set)
+        raw_lap_s = driver.get('target_lap_s')
+        d_lap_s   = float(raw_lap_s) if raw_lap_s and float(raw_lap_s) > 0 else global_lap_s
+
+        raw_fpl   = driver.get('target_fpl')
+        d_base_fpl = float(raw_fpl) if raw_fpl and float(raw_fpl) > 0 else global_base_fpl
+        d_fpl      = d_base_fpl * multiplier
+
+        # Per-driver stint limits
+        d_usable        = fuel_capacity - (d_fpl * SAFETY_BUFFER_LAPS)
+        d_laps_per_tank = int(math.floor(d_usable / d_fpl)) if d_fpl > 0 else 999
+        d_fatigue_laps  = int(math.floor(max_continuous_hrs * 3600 / d_lap_s)) if d_lap_s > 0 else 999
+        d_laps_per_stint = max(min(d_laps_per_tank, d_fatigue_laps), 1)
+
+        # How many laps remain based on remaining race time at this driver's pace
+        remaining_s          = race_dur_s - total_time_s
+        remaining_laps_avail = int(math.floor(remaining_s / d_lap_s)) if d_lap_s > 0 else 0
+
+        if remaining_laps_avail <= 0:
+            break
+
+        stint_laps = min(d_laps_per_stint, remaining_laps_avail)
         end_lap    = current_lap + stint_laps - 1
+        is_last    = (remaining_laps_avail <= stint_laps)
+        pit_lap    = end_lap if not is_last else None
 
-        # pit on last lap of stint (unless this is the final stint)
-        is_last = (end_lap >= total_laps)
-        pit_lap  = end_lap if not is_last else None
-
-        fuel_load = round(stint_laps * fuel_per_lap + fuel_per_lap * SAFETY_BUFFER_LAPS, 2)
-        fuel_load = min(fuel_load, fuel_capacity)   # cap at tank size
-
-        driver = drivers[driver_index % n_drivers] if drivers else {'name': f'Driver {(driver_index % n_drivers) + 1}', 'id': None, 'color': '#4fc3f7'}
+        fuel_load = round(stint_laps * d_fpl + d_fpl * SAFETY_BUFFER_LAPS, 2)
+        fuel_load = min(fuel_load, fuel_capacity)
 
         stints.append({
-            'stint_num':       stint_num,
-            'driver_name':     driver.get('name', ''),
-            'driver_id':       driver.get('id'),
-            'driver_color':    driver.get('color', '#4fc3f7'),
-            'start_lap':       current_lap,
-            'end_lap':         end_lap,
-            'pit_lap':         pit_lap,
-            'fuel_load':       fuel_load,
-            'fuel_mode':       fuel_mode,
-            'laps_in_stint':   stint_laps,
-            'is_last':         is_last,
+            'stint_num':     stint_num,
+            'driver_name':   driver.get('name', ''),
+            'driver_id':     driver.get('id'),
+            'driver_color':  driver.get('color', '#4fc3f7'),
+            'start_lap':     current_lap,
+            'end_lap':       end_lap,
+            'pit_lap':       pit_lap,
+            'fuel_load':     fuel_load,
+            'fuel_mode':     fuel_mode,
+            'laps_in_stint': stint_laps,
+            'is_last':       is_last,
         })
 
-        current_lap   = end_lap + 1
-        stint_num    += 1
-        driver_index += 1
+        total_time_s  += stint_laps * d_lap_s
+        current_lap    = end_lap + 1
+        stint_num     += 1
+        driver_index  += 1
+
+    total_laps = stints[-1]['end_lap'] if stints else 0
 
     return {
-        'stints':          stints,
-        'total_laps':      total_laps,
-        'laps_per_tank':   laps_per_tank,
-        'laps_per_stint':  laps_per_stint,
-        'fuel_per_lap':    round(fuel_per_lap, 3),
-        'total_stints':    len(stints),
-        'pit_stops':       max(len(stints) - 1, 0),
+        'stints':         stints,
+        'total_laps':     total_laps,
+        'laps_per_tank':  laps_per_tank,
+        'laps_per_stint': laps_per_stint,
+        'fuel_per_lap':   round(global_fpl, 3),
+        'total_stints':   len(stints),
+        'pit_stops':      max(len(stints) - 1, 0),
     }
 
 
@@ -252,8 +276,9 @@ def create_plan():
     for i, d in enumerate(drivers_data):
         color = d.get('color', colors[i % len(colors)])
         db_exec(
-            "INSERT INTO drivers (plan_id, name, max_hours, min_hours, color) VALUES (%s, %s, %s, %s, %s)",
-            (plan_id, d['name'], d.get('max_hours', 2.0), d.get('min_hours', 0), color)
+            "INSERT INTO drivers (plan_id, name, max_hours, min_hours, color, target_lap_s, target_fpl) VALUES (%s, %s, %s, %s, %s, %s, %s)",
+            (plan_id, d['name'], d.get('max_hours', 2.0), d.get('min_hours', 0), color,
+             d.get('target_lap_s'), d.get('target_fpl'))
         )
     db_commit()
 
@@ -304,8 +329,9 @@ def update_plan(plan_id):
         for i, d in enumerate(data['drivers']):
             color = d.get('color', colors[i % len(colors)])
             db_exec(
-                "INSERT INTO drivers (plan_id, name, max_hours, min_hours, color) VALUES (%s, %s, %s, %s, %s)",
-                (plan_id, d['name'], d.get('max_hours', 2.0), d.get('min_hours', 0), color)
+                "INSERT INTO drivers (plan_id, name, max_hours, min_hours, color, target_lap_s, target_fpl) VALUES (%s, %s, %s, %s, %s, %s, %s)",
+                (plan_id, d['name'], d.get('max_hours', 2.0), d.get('min_hours', 0), color,
+                 d.get('target_lap_s'), d.get('target_fpl'))
             )
 
     db_commit()
@@ -552,7 +578,7 @@ def export_plan(plan_id):
 
 def _get_drivers(plan_id):
     return db_exec(
-        "SELECT id, name, max_hours, min_hours, color FROM drivers WHERE plan_id=%s ORDER BY id",
+        "SELECT id, name, max_hours, min_hours, color, target_lap_s, target_fpl FROM drivers WHERE plan_id=%s ORDER BY id",
         (plan_id,)
     ).fetchall()
 

@@ -154,8 +154,18 @@
 
         <div class="card">
           <h3>Drivers</h3>
+          <div class="driver-list-header">
+            <span class="dlh-color"></span>
+            <span class="dlh-name">Name</span>
+            <span class="dlh-num">Max hrs</span>
+            <span class="dlh-num">Min hrs</span>
+            <span class="dlh-laptime">Target lap</span>
+            <span class="dlh-fpl">Fuel/lap</span>
+            <span class="dlh-rm"></span>
+          </div>
           <div id="driverList"></div>
           <button type="button" class="btn-ghost add-driver-btn" id="addDriverBtn">+ Add Driver</button>
+          <p class="form-hint">Target lap &amp; fuel/lap override global values per driver. Leave blank to use global.</p>
         </div>
 
       </form>
@@ -336,9 +346,13 @@
       <input type="color" class="driver-color" value="#4fc3f7" />
       <input type="text" class="driver-name" placeholder="Driver name" />
       <input type="number" class="driver-maxhrs" step="0.5" min="0.5" max="12" value="2.5" title="Max continuous hours per stint" />
-      <span class="unit">max</span>
-      <input type="number" class="driver-minhrs" step="0.25" min="0" max="12" value="0" title="Minimum total race hours (series requirement, 0 = no minimum)" />
-      <span class="unit">min hrs</span>
+      <input type="number" class="driver-minhrs" step="0.25" min="0" max="12" value="0" title="Minimum total race hours (0 = no minimum)" />
+      <div class="driver-target-lap">
+        <input type="number" class="driver-target-min" min="0" max="59" placeholder="mm" title="Target lap time — minutes" />
+        <span class="sep">:</span>
+        <input type="number" class="driver-target-sec" min="0" max="59.9" step="0.1" placeholder="ss" title="Target lap time — seconds" />
+      </div>
+      <input type="number" class="driver-target-fpl" min="0.01" max="15" step="0.01" placeholder="—" title="Target fuel per lap (gal) — overrides global" />
       <button type="button" class="btn-ghost remove-driver">✕</button>
     </div>
   </template>

@@ -100,37 +100,42 @@ function initTabs() {
 // Plan selector (header dropdown)
 // ---------------------------------------------------------------------------
 async function loadPlanList() {
-  const res   = await fetch('/api/plans');
-  const plans = await res.json();
-  const sel   = $('#planSelect');
+  try {
+    const res   = await fetch('/api/plans');
+    if (!res.ok) return;
+    const plans = await res.json();
+    const sel   = $('#planSelect');
 
-  // keep existing "new plan" option, rebuild the rest
-  while (sel.options.length > 1) sel.remove(1);
+    // keep existing "new plan" option, rebuild the rest
+    while (sel.options.length > 1) sel.remove(1);
 
-  plans.forEach(p => {
-    const opt = new Option(p.name, p.id);
-    sel.add(opt);
-  });
+    plans.forEach(p => {
+      const opt = new Option(p.name, p.id);
+      sel.add(opt);
+    });
 
-  if (state.activePlan) {
-    sel.value = state.activePlan.id;
-  }
+    if (state.activePlan) {
+      sel.value = state.activePlan.id;
+    }
+  } catch (_) { /* server unreachable — silently skip */ }
 }
 
 async function loadPlan(id) {
-  const res  = await fetch(`/api/plans/${id}`);
-  if (!res.ok) return;
-  const plan = await res.json();
-  state.activePlan = plan;
-  populateSetupForm(plan);
-  renderStintTable(plan);
-  renderLiveMode(plan);
-  renderLapTimes(plan);
-  renderExport(plan);
-  $('#planSelect').value = id;
-  // Show plan ID badge in header and on live tab
-  const badge = `<span class="plan-id-badge" title="Use this ID in the Telemetry Agent">ID: ${plan.id}</span>`;
-  document.querySelectorAll('.plan-id-display').forEach(el => el.innerHTML = badge);
+  try {
+    const res  = await fetch(`/api/plans/${id}`);
+    if (!res.ok) return;
+    const plan = await res.json();
+    state.activePlan = plan;
+    populateSetupForm(plan);
+    renderStintTable(plan);
+    renderLiveMode(plan);
+    renderLapTimes(plan);
+    renderExport(plan);
+    $('#planSelect').value = id;
+    // Show plan ID badge in header and on live tab
+    const badge = `<span class="plan-id-badge" title="Use this ID in the Telemetry Agent">ID: ${plan.id}</span>`;
+    document.querySelectorAll('.plan-id-display').forEach(el => el.innerHTML = badge);
+  } catch (_) { /* server unreachable */ }
 }
 
 // ---------------------------------------------------------------------------
@@ -179,12 +184,22 @@ function buildConfig() {
 }
 
 function buildDrivers() {
-  return $$('.driver-row').map((row, i) => ({
-    name:      $('.driver-name', row).value.trim() || `Driver ${i + 1}`,
-    max_hours: parseFloat($('.driver-maxhrs', row).value) || 2.5,
-    min_hours: parseFloat($('.driver-minhrs', row).value) || 0,
-    color:     $('.driver-color', row).value,
-  }));
+  return $$('.driver-row').map((row, i) => {
+    const tMin = parseFloat($('.driver-target-min', row).value);
+    const tSec = parseFloat($('.driver-target-sec', row).value);
+    const targetLapS = (!isNaN(tMin) || !isNaN(tSec))
+      ? (isNaN(tMin) ? 0 : tMin) * 60 + (isNaN(tSec) ? 0 : tSec)
+      : null;
+    const rawFpl = parseFloat($('.driver-target-fpl', row).value);
+    return {
+      name:         $('.driver-name', row).value.trim() || `Driver ${i + 1}`,
+      max_hours:    parseFloat($('.driver-maxhrs', row).value) || 2.5,
+      min_hours:    parseFloat($('.driver-minhrs', row).value) || 0,
+      color:        $('.driver-color', row).value,
+      target_lap_s: (targetLapS && targetLapS > 0) ? targetLapS : null,
+      target_fpl:   (!isNaN(rawFpl) && rawFpl > 0) ? rawFpl : null,
+    };
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -221,12 +236,19 @@ function addDriverRow(driver = null) {
   const idx  = $$('.driver-row').length;
 
   if (driver) {
-    $('.driver-color', row).value   = driver.color     || COLORS[idx % COLORS.length];
-    $('.driver-name',  row).value   = driver.name      || '';
-    $('.driver-maxhrs',row).value   = driver.max_hours || 2.5;
-    $('.driver-minhrs',row).value   = driver.min_hours || 0;
+    $('.driver-color',  row).value = driver.color     || COLORS[idx % COLORS.length];
+    $('.driver-name',   row).value = driver.name      || '';
+    $('.driver-maxhrs', row).value = driver.max_hours || 2.5;
+    $('.driver-minhrs', row).value = driver.min_hours || 0;
+    if (driver.target_lap_s && driver.target_lap_s > 0) {
+      $('.driver-target-min', row).value = Math.floor(driver.target_lap_s / 60);
+      $('.driver-target-sec', row).value = (driver.target_lap_s % 60).toFixed(1);
+    }
+    if (driver.target_fpl && driver.target_fpl > 0) {
+      $('.driver-target-fpl', row).value = driver.target_fpl;
+    }
   } else {
-    $('.driver-color', row).value   = COLORS[idx % COLORS.length];
+    $('.driver-color', row).value = COLORS[idx % COLORS.length];
   }
 
   $('.remove-driver', row).addEventListener('click', () => {
@@ -265,41 +287,52 @@ async function calculateStrategy() {
   const name    = $('#planName').value.trim() || 'Untitled Plan';
   const msg     = $('#setupMessages');
 
-  let res, plan;
-  if (state.activePlan) {
-    res  = await fetch(`/api/plans/${state.activePlan.id}`, {
-      method:  'PUT',
-      headers: { 'Content-Type': 'application/json' },
-      body:    JSON.stringify({ name, config, drivers }),
-    });
-    plan = await res.json();
-  } else {
-    res  = await fetch('/api/plans', {
-      method:  'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body:    JSON.stringify({ name, config, drivers }),
-    });
-    const data = await res.json();
-    // after create, fetch full plan
-    const res2 = await fetch(`/api/plans/${data.id}`);
-    plan = await res2.json();
+  try {
+    let res, plan;
+    if (state.activePlan) {
+      res  = await fetch(`/api/plans/${state.activePlan.id}`, {
+        method:  'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body:    JSON.stringify({ name, config, drivers }),
+      });
+      if (!res.ok) {
+        showMessage(msg, `Server error ${res.status} — could not update plan.`, 'error');
+        return;
+      }
+      plan = await res.json();
+    } else {
+      res  = await fetch('/api/plans', {
+        method:  'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body:    JSON.stringify({ name, config, drivers }),
+      });
+      if (!res.ok) {
+        showMessage(msg, `Server error ${res.status} — could not create plan.`, 'error');
+        return;
+      }
+      const data = await res.json();
+      // after create, fetch full plan
+      const res2 = await fetch(`/api/plans/${data.id}`);
+      if (!res2.ok) {
+        showMessage(msg, 'Plan created but could not reload — please refresh.', 'error');
+        return;
+      }
+      plan = await res2.json();
+    }
+
+    state.activePlan = plan;
+    await loadPlanList();
+    showMessage(msg, 'Strategy calculated!');
+    renderStintTable(plan);
+
+    // auto-switch to stint tab
+    $$('.tab-btn').forEach(b => b.classList.remove('active'));
+    $$('.tab-section').forEach(s => s.classList.remove('active'));
+    $('[data-tab="stint"]').classList.add('active');
+    $('#tab-stint').classList.add('active');
+  } catch (err) {
+    showMessage(msg, `Error: ${err.message || 'Could not reach server'}`, 'error');
   }
-
-  if (!res.ok) {
-    showMessage(msg, 'Error calculating strategy.', 'error');
-    return;
-  }
-
-  state.activePlan = plan;
-  await loadPlanList();
-  showMessage(msg, 'Strategy calculated. Switch to Stint Plan to review.');
-  renderStintTable(plan);
-
-  // auto-switch to stint tab
-  $$('.tab-btn').forEach(b => b.classList.remove('active'));
-  $$('.tab-section').forEach(s => s.classList.remove('active'));
-  $('[data-tab="stint"]').classList.add('active');
-  $('#tab-stint').classList.add('active');
 }
 
 async function saveSetup() {
@@ -312,18 +345,22 @@ async function saveSetup() {
   const name    = $('#planName').value.trim() || state.activePlan.name;
   const msg     = $('#setupMessages');
 
-  const res = await fetch(`/api/plans/${state.activePlan.id}`, {
-    method:  'PUT',
-    headers: { 'Content-Type': 'application/json' },
-    body:    JSON.stringify({ name, config, drivers }),
-  });
-  if (res.ok) {
-    const plan = await res.json();
-    state.activePlan = plan;
-    await loadPlanList();
-    showMessage(msg, 'Plan saved.');
-  } else {
-    showMessage(msg, 'Save failed.', 'error');
+  try {
+    const res = await fetch(`/api/plans/${state.activePlan.id}`, {
+      method:  'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body:    JSON.stringify({ name, config, drivers }),
+    });
+    if (res.ok) {
+      const plan = await res.json();
+      state.activePlan = plan;
+      await loadPlanList();
+      showMessage(msg, 'Plan saved.');
+    } else {
+      showMessage(msg, `Save failed (${res.status}).`, 'error');
+    }
+  } catch (err) {
+    showMessage(msg, `Error: ${err.message || 'Could not reach server'}`, 'error');
   }
 }
 
@@ -341,20 +378,22 @@ function renderStintTable(plan) {
 
   const config       = plan.config || {};
   const fuelCap      = config.fuel_capacity_l || 18;
-  const lapTimeSec   = config.lap_time_s || 90;
+  const globalLapSec = config.lap_time_s || 90;
+  const globalFpl    = config.fuel_per_lap_l * (MODE_MULT[config.fuel_mode] || 1);
   const totalLaps    = stints[stints.length - 1]?.end_lap || 1;
   const wearRate     = config.tire_wear_rate_pct || 0;
+  const driversMap   = {};
+  (plan.drivers || []).forEach(d => { driversMap[d.id] = d; });
 
-  // meta badges
-  const fpl         = config.fuel_per_lap_l * (MODE_MULT[config.fuel_mode] || 1);
-  const lapsPerTank = Math.floor((fuelCap - fpl) / fpl);
+  // meta badges — use global values for summary
+  const lapsPerTank = Math.floor((fuelCap - globalFpl) / globalFpl);
   const pitStops    = stints.filter(s => s.pit_lap).length;
 
   $('#strategyMeta').innerHTML = `
     <span class="badge">Total laps: <strong>${totalLaps}</strong></span>
     <span class="badge">Stints: <strong>${stints.length}</strong></span>
     <span class="badge">Pit stops: <strong>${pitStops}</strong></span>
-    <span class="badge">Laps/tank: <strong>${lapsPerTank}</strong></span>
+    <span class="badge">Laps/tank (global): <strong>${lapsPerTank}</strong></span>
     <span class="badge">Fuel mode: <strong>${config.fuel_mode || 'normal'}</strong></span>
   `;
 
@@ -373,6 +412,7 @@ function renderStintTable(plan) {
           <th>Stint Time</th>
           <th>Pit Lap</th>
           <th>Fuel Load</th>
+          <th>Fuel/Lap</th>
           <th>Fuel %</th>
         </tr>
       </thead>
@@ -381,7 +421,13 @@ function renderStintTable(plan) {
 
   stints.forEach(s => {
     const laps      = s.end_lap - s.start_lap + 1;
-    const stintSec  = laps * lapTimeSec;
+    // Use per-driver target lap time if set, else global
+    const driver    = driversMap[s.driver_id];
+    const lapSec    = (driver && driver.target_lap_s > 0) ? driver.target_lap_s : globalLapSec;
+    const dFpl      = (driver && driver.target_fpl > 0)
+                        ? driver.target_fpl * (MODE_MULT[config.fuel_mode] || 1)
+                        : globalFpl;
+    const stintSec  = laps * lapSec;
     const fuelPct   = Math.min(Math.round((s.fuel_load / fuelCap) * 100), 100);
     const isLast    = !s.pit_lap;
     const dotColor  = s.driver_color || '#4fc3f7';
@@ -406,6 +452,9 @@ function renderStintTable(plan) {
       `<option value="${d.id}" ${d.id === s.driver_id ? 'selected' : ''}>${d.name}</option>`
     ).join('');
 
+    const hasDriverLap = driver && driver.target_lap_s > 0;
+    const hasDriverFpl = driver && driver.target_fpl > 0;
+
     html += `
       <tr class="${isLast ? 'last-stint' : ''}">
         <td>${s.stint_num}</td>
@@ -426,9 +475,14 @@ function renderStintTable(plan) {
         <td>${s.start_lap}</td>
         <td>${s.end_lap}</td>
         <td>${laps}</td>
-        <td>${hrsToHM(stintSec / 3600)}</td>
+        <td${hasDriverLap ? ' title="Based on driver\'s target lap time"' : ''}>
+          ${hrsToHM(stintSec / 3600)}${hasDriverLap ? ' <span class="driver-target-tag">★</span>' : ''}
+        </td>
         <td>${pitCell}</td>
         <td>${fmt(s.fuel_load, 1)} gal</td>
+        <td${hasDriverFpl ? ' title="Driver\'s own fuel rate"' : ''}>
+          <span${hasDriverFpl ? ' class="driver-target-tag"' : ''} style="font-variant-numeric:tabular-nums">${fmt(dFpl, 3)}</span>
+        </td>
         <td class="fuel-bar-cell">
           <div class="fuel-bar">
             <div class="fuel-bar-fill" style="width:${fuelPct}%"></div>

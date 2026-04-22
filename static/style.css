@@ -309,15 +309,47 @@ input[type="color"] {
 .preview-row strong { color: var(--text); font-variant-numeric: tabular-nums; }
 
 /* ===== DRIVERS ===== */
+.driver-list-header {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0 0 0.35rem;
+  margin-bottom: 0.3rem;
+  border-bottom: 1px solid var(--border);
+  font-size: 0.66rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
+.dlh-color   { width: 36px; flex-shrink: 0; }
+.dlh-name    { flex: 1; min-width: 80px; }
+.dlh-num     { width: 60px; flex-shrink: 0; text-align: center; }
+.dlh-laptime { width: 88px; flex-shrink: 0; text-align: center; }
+.dlh-fpl     { width: 54px; flex-shrink: 0; text-align: center; }
+.dlh-rm      { width: 28px; flex-shrink: 0; }
+
 .driver-row {
   display: flex;
   align-items: center;
   gap: 0.5rem;
-  margin-bottom: 0.6rem;
+  margin-bottom: 0.5rem;
 }
-.driver-row .driver-name    { flex: 1; min-width: 80px; }
-.driver-row .driver-maxhrs  { width: 60px; flex: 0 0 60px; }
-.driver-row .driver-minhrs  { width: 60px; flex: 0 0 60px; }
+.driver-row .driver-name        { flex: 1; min-width: 80px; }
+.driver-row .driver-maxhrs      { width: 60px; flex: 0 0 60px; }
+.driver-row .driver-minhrs      { width: 60px; flex: 0 0 60px; }
+.driver-row .driver-target-fpl  { width: 54px; flex: 0 0 54px; }
+
+.driver-target-lap {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  flex: 0 0 88px;
+  width: 88px;
+}
+.driver-target-lap .driver-target-min { width: 38px; flex: 0 0 38px; padding: 0.3rem 0.3rem; }
+.driver-target-lap .driver-target-sec { width: 42px; flex: 0 0 42px; padding: 0.3rem 0.3rem; }
+.driver-target-fpl { padding: 0.3rem 0.3rem; }
+
 .add-driver-btn { margin-top: 0.4rem; font-size: 0.8rem; }
 
 /* ===== MESSAGES ===== */
@@ -496,6 +528,14 @@ table.stint-table tr.last-stint td { opacity: 0.6; }
   font-size: 0.65rem;
   color: var(--text-dim);
   margin-top: 1px;
+}
+
+/* Star tag shown on cells that use a driver's personal target value */
+.driver-target-tag {
+  font-size: 0.6rem;
+  color: var(--yellow);
+  vertical-align: super;
+  margin-left: 2px;
 }
 
 /* ===== TIRE PROMPT (live mode) ===== */
