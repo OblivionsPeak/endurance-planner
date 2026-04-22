@@ -1,0 +1,459 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0" />
+  <title>Pit Wall</title>
+  <link rel="icon" type="image/x-icon" href="/static/favicon.ico" />
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --bg:      #07101f;
+      --bg2:     #0c1830;
+      --border:  #1a2f52;
+      --accent:  #c8192e;
+      --green:   #3ecf8e;
+      --yellow:  #f5c542;
+      --red:     #c8192e;
+      --text:    #edf1ff;
+      --dim:     #6e85b0;
+    }
+
+    html, body {
+      background: var(--bg);
+      color: var(--text);
+      font-family: 'Segoe UI', system-ui, sans-serif;
+      height: 100%;
+      overflow: hidden;
+    }
+
+    /* ── Setup Screen ── */
+    #setupScreen {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      height: 100vh;
+      gap: 1.2rem;
+      padding: 2rem;
+    }
+    #setupScreen h1 { font-size: 1.4rem; letter-spacing: 0.05em; }
+    #setupScreen label { font-size: 0.85rem; color: var(--dim); }
+    #setupScreen input {
+      width: 100%;
+      max-width: 280px;
+      background: var(--bg2);
+      border: 1px solid var(--border);
+      color: var(--text);
+      border-radius: 6px;
+      padding: 0.7rem 1rem;
+      font-size: 1.1rem;
+      text-align: center;
+    }
+    #connectBtn {
+      width: 100%;
+      max-width: 280px;
+      background: var(--accent);
+      color: #fff;
+      border: none;
+      border-radius: 6px;
+      padding: 0.8rem;
+      font-size: 1rem;
+      font-weight: 700;
+      cursor: pointer;
+      letter-spacing: 0.06em;
+    }
+    #setupError { color: var(--red); font-size: 0.85rem; }
+
+    /* ── Pit Wall Screen ── */
+    #pwScreen {
+      display: none;
+      flex-direction: column;
+      height: 100vh;
+      padding: 0;
+      background: var(--bg);
+    }
+
+    /* Header bar */
+    .pw-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      background: var(--bg2);
+      border-bottom: 1px solid var(--border);
+      padding: 0.5rem 1rem;
+      flex-shrink: 0;
+    }
+    .pw-plan-name { font-size: 0.75rem; color: var(--dim); letter-spacing: 0.05em; }
+    .pw-live-dot {
+      width: 8px; height: 8px;
+      border-radius: 50%;
+      background: var(--dim);
+      display: inline-block;
+      margin-right: 0.35rem;
+    }
+    .pw-live-dot.live { background: var(--green); animation: pulse 1.5s infinite; }
+    @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:0.3} }
+    .pw-live-label { font-size: 0.72rem; color: var(--dim); }
+    .pw-live-label.live { color: var(--green); }
+    .pw-disconnect { background: none; border: none; color: var(--dim); font-size: 0.75rem; cursor: pointer; }
+
+    /* Main content */
+    .pw-body {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+    }
+
+    /* Stint + driver block */
+    .pw-top {
+      flex: 0 0 auto;
+      text-align: center;
+      padding: 0.6rem 1rem 0.4rem;
+      border-bottom: 1px solid var(--border);
+    }
+    .pw-stint-label { font-size: 0.65rem; color: var(--dim); letter-spacing: 0.12em; text-transform: uppercase; }
+    .pw-stint-num   { font-size: 1.6rem; font-weight: 800; line-height: 1.1; }
+    .pw-driver-name { font-size: 1.1rem; font-weight: 600; margin-top: 0.1rem; }
+
+    /* Laps-to-pit hero */
+    .pw-hero {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      padding: 0.5rem;
+    }
+    .pw-laps-label { font-size: 0.65rem; color: var(--dim); letter-spacing: 0.14em; text-transform: uppercase; margin-bottom: 0.2rem; }
+    .pw-laps-big {
+      font-size: clamp(5rem, 28vw, 10rem);
+      font-weight: 900;
+      line-height: 0.9;
+      letter-spacing: -0.02em;
+      transition: color 0.4s;
+    }
+    .pw-laps-big.ok       { color: var(--green); }
+    .pw-laps-big.warn     { color: var(--yellow); }
+    .pw-laps-big.critical { color: var(--red); }
+    .pw-pit-lap { font-size: 0.85rem; color: var(--dim); margin-top: 0.4rem; }
+
+    /* Window bar */
+    .pw-window-bar {
+      width: 90%;
+      max-width: 320px;
+      height: 6px;
+      background: var(--border);
+      border-radius: 3px;
+      margin: 0.5rem auto 0;
+      overflow: hidden;
+    }
+    .pw-window-fill {
+      height: 100%;
+      border-radius: 3px;
+      transition: width 0.4s, background 0.4s;
+    }
+
+    /* Info row */
+    .pw-info-row {
+      display: flex;
+      border-top: 1px solid var(--border);
+      flex-shrink: 0;
+    }
+    .pw-info-cell {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      padding: 0.6rem 0.4rem;
+      border-right: 1px solid var(--border);
+    }
+    .pw-info-cell:last-child { border-right: none; }
+    .pw-info-label { font-size: 0.6rem; color: var(--dim); letter-spacing: 0.1em; text-transform: uppercase; }
+    .pw-info-val   { font-size: 1.05rem; font-weight: 700; margin-top: 0.15rem; }
+
+    /* Fuel bar */
+    .pw-fuel-bar {
+      width: 80%;
+      height: 4px;
+      background: var(--border);
+      border-radius: 2px;
+      margin: 0.2rem auto 0;
+      overflow: hidden;
+    }
+    .pw-fuel-fill { height: 100%; border-radius: 2px; transition: width 0.4s; }
+
+    /* Manual lap override */
+    .pw-footer {
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+      padding: 0.5rem 1rem;
+      background: var(--bg2);
+      border-top: 1px solid var(--border);
+      flex-shrink: 0;
+    }
+    .pw-footer label { font-size: 0.72rem; color: var(--dim); white-space: nowrap; }
+    .pw-footer input {
+      flex: 1;
+      background: var(--bg);
+      border: 1px solid var(--border);
+      color: var(--text);
+      border-radius: 6px;
+      padding: 0.4rem 0.6rem;
+      font-size: 0.95rem;
+      text-align: center;
+    }
+    .pw-footer button {
+      background: var(--accent);
+      color: #fff;
+      border: none;
+      border-radius: 6px;
+      padding: 0.4rem 0.8rem;
+      font-size: 0.85rem;
+      font-weight: 700;
+      cursor: pointer;
+    }
+
+    /* PIT NOW banner */
+    .pw-pit-now {
+      display: none;
+      text-align: center;
+      background: var(--red);
+      color: #fff;
+      font-size: 1.3rem;
+      font-weight: 900;
+      letter-spacing: 0.1em;
+      padding: 0.5rem;
+      animation: flash 0.8s infinite;
+    }
+    @keyframes flash { 0%,100%{opacity:1} 50%{opacity:0.5} }
+
+    /* Race complete */
+    .pw-finished {
+      display: none;
+      flex: 1;
+      align-items: center;
+      justify-content: center;
+      font-size: 2rem;
+      font-weight: 900;
+      color: var(--green);
+      letter-spacing: 0.1em;
+    }
+  </style>
+</head>
+<body>
+
+<!-- ── Setup Screen ── -->
+<div id="setupScreen">
+  <h1>⬡ PIT WALL</h1>
+  <label for="pwPlanId">Plan ID</label>
+  <input type="number" id="pwPlanId" placeholder="Enter Plan ID" value="{{ plan_id }}" />
+  <button id="connectBtn">Connect</button>
+  <span id="setupError"></span>
+</div>
+
+<!-- ── Pit Wall Screen ── -->
+<div id="pwScreen">
+  <div class="pw-header">
+    <span class="pw-plan-name" id="pwPlanName">—</span>
+    <span>
+      <span class="pw-live-dot" id="pwLiveDot"></span>
+      <span class="pw-live-label" id="pwLiveLabel">Waiting…</span>
+    </span>
+    <button class="pw-disconnect" id="pwDisconnect">✕</button>
+  </div>
+
+  <div class="pw-body">
+    <div class="pw-top">
+      <div class="pw-stint-label">STINT</div>
+      <div class="pw-stint-num" id="pwsStintNum">—</div>
+      <div class="pw-driver-name" id="pwsDriver">—</div>
+    </div>
+
+    <div class="pw-hero" id="pwHero">
+      <div class="pw-laps-label">LAPS TO PIT</div>
+      <div class="pw-laps-big ok" id="pwsLaps">—</div>
+      <div class="pw-pit-lap" id="pwsPitLap"></div>
+      <div class="pw-window-bar"><div class="pw-window-fill" id="pwsWindowFill" style="width:60%;background:var(--green)"></div></div>
+    </div>
+
+    <div class="pw-pit-now" id="pwsPitNow">▶ PIT NOW</div>
+    <div class="pw-finished" id="pwsFinished" style="display:none;flex-direction:column;gap:0.5rem">
+      <span>RACE COMPLETE</span>
+    </div>
+
+    <div class="pw-info-row">
+      <div class="pw-info-cell">
+        <span class="pw-info-label">FUEL</span>
+        <span class="pw-info-val" id="pwsFuel">—</span>
+        <div class="pw-fuel-bar"><div class="pw-fuel-fill" id="pwsFuelFill" style="width:100%;background:var(--green)"></div></div>
+      </div>
+      <div class="pw-info-cell">
+        <span class="pw-info-label">FUEL LAPS</span>
+        <span class="pw-info-val" id="pwsFuelLaps">—</span>
+      </div>
+      <div class="pw-info-cell">
+        <span class="pw-info-label">NEXT DRIVER</span>
+        <span class="pw-info-val" id="pwsNext">—</span>
+      </div>
+    </div>
+  </div>
+
+  <div class="pw-footer">
+    <label>Lap</label>
+    <input type="number" id="pwsLapInput" min="1" value="1" />
+    <button id="pwsUpdate">Update</button>
+  </div>
+</div>
+
+<script>
+  const $ = id => document.getElementById(id);
+  let planId   = null;
+  let planName = '';
+  let autoInterval = null;
+  let currentLap   = 1;
+
+  // Pre-fill plan ID from URL if provided
+  const urlPlanId = "{{ plan_id }}";
+  if (urlPlanId && urlPlanId !== 'None' && urlPlanId !== '') {
+    $('pwPlanId').value = urlPlanId;
+  }
+
+  $('connectBtn').addEventListener('click', connect);
+  $('pwPlanId').addEventListener('keydown', e => { if (e.key === 'Enter') connect(); });
+
+  async function connect() {
+    const id = parseInt($('pwPlanId').value);
+    if (!id) { $('setupError').textContent = 'Enter a valid Plan ID.'; return; }
+    $('setupError').textContent = '';
+    $('connectBtn').textContent = 'Connecting…';
+    try {
+      const res = await fetch(`/api/plans/${id}`);
+      if (!res.ok) throw new Error(`Plan ${id} not found`);
+      const plan = await res.json();
+      planId   = id;
+      planName = plan.name || `Plan ${id}`;
+      $('pwPlanName').textContent = planName;
+      $('setupScreen').style.display = 'none';
+      $('pwScreen').style.display    = 'flex';
+      startPolling();
+    } catch (e) {
+      $('setupError').textContent = e.message;
+      $('connectBtn').textContent = 'Connect';
+    }
+  }
+
+  $('pwDisconnect').addEventListener('click', () => {
+    clearInterval(autoInterval);
+    $('pwScreen').style.display    = 'none';
+    $('setupScreen').style.display = 'flex';
+    $('connectBtn').textContent = 'Connect';
+  });
+
+  $('pwsUpdate').addEventListener('click', () => {
+    currentLap = parseInt($('pwsLapInput').value) || currentLap;
+    refresh();
+  });
+  $('pwsLapInput').addEventListener('keydown', e => {
+    if (e.key === 'Enter') { currentLap = parseInt($('pwsLapInput').value) || currentLap; refresh(); }
+  });
+
+  function startPolling() {
+    refresh();
+    autoInterval = setInterval(async () => {
+      // Try telemetry first
+      try {
+        const tr = await fetch(`/api/plans/${planId}/telemetry`);
+        if (tr.ok) {
+          const t = await tr.json();
+          const live = !t.stale && t.current_lap > 0;
+          $('pwLiveDot').className   = 'pw-live-dot' + (live ? ' live' : '');
+          $('pwLiveLabel').className = 'pw-live-label' + (live ? ' live' : '');
+          $('pwLiveLabel').textContent = live ? 'LIVE' : 'Manual';
+          if (live && t.current_lap && t.current_lap !== currentLap) {
+            currentLap = t.current_lap;
+            $('pwsLapInput').value = currentLap;
+          }
+        }
+      } catch (_) {}
+      refresh();
+    }, 3000);
+  }
+
+  async function refresh() {
+    if (!planId) return;
+    try {
+      const res  = await fetch(`/api/plans/${planId}/live_status?lap=${currentLap}`);
+      if (!res.ok) return;
+      const data = await res.json();
+      render(data);
+    } catch (_) {}
+  }
+
+  function render(data) {
+    const hero     = $('pwHero');
+    const pitNow   = $('pwsPitNow');
+    const finished = $('pwsFinished');
+
+    if (data.status === 'finished') {
+      hero.style.display     = 'none';
+      pitNow.style.display   = 'none';
+      finished.style.display = 'flex';
+      return;
+    }
+
+    finished.style.display = 'none';
+    const s        = data.current_stint;
+    const next     = data.next_stint;
+    const laps2pit = data.laps_until_pit;
+
+    $('pwsStintNum').textContent = `#${s.stint_num}`;
+    $('pwsDriver').textContent   = s.driver_name || '—';
+
+    const lapsEl = $('pwsLaps');
+    if (!s.pit_lap) {
+      lapsEl.textContent = 'FINAL';
+      lapsEl.className   = 'pw-laps-big ok';
+      pitNow.style.display = 'none';
+      hero.style.display   = 'flex';
+    } else if (laps2pit <= 0) {
+      lapsEl.textContent = 'PIT';
+      lapsEl.className   = 'pw-laps-big critical';
+      pitNow.style.display = 'block';
+      hero.style.display   = 'flex';
+    } else {
+      lapsEl.textContent = laps2pit;
+      lapsEl.className   = 'pw-laps-big ' + (laps2pit <= 2 ? 'critical' : laps2pit <= 4 ? 'warn' : 'ok');
+      pitNow.style.display = 'none';
+      hero.style.display   = 'flex';
+    }
+
+    $('pwsPitLap').textContent = s.pit_lap ? `Pit lap: ${s.pit_lap}` : '';
+
+    // Pit window bar
+    const winFill = $('pwsWindowFill');
+    const ws = data.pit_window_status || 'green';
+    winFill.style.background = ws === 'red' ? 'var(--red)' : ws === 'yellow' ? 'var(--yellow)' : 'var(--green)';
+    winFill.style.width      = ws === 'red' ? '100%' : ws === 'yellow' ? '80%' : '55%';
+
+    // Fuel
+    const fuelPct   = data.fuel_pct || 0;
+    const fuelColor = fuelPct < 20 ? 'var(--red)' : fuelPct < 40 ? 'var(--yellow)' : 'var(--green)';
+    $('pwsFuel').textContent     = `${data.fuel_remaining_l} gal`;
+    $('pwsFuelLaps').textContent = data.laps_of_fuel;
+    $('pwsFuelFill').style.width      = `${fuelPct}%`;
+    $('pwsFuelFill').style.background = fuelColor;
+
+    $('pwsNext').textContent = next?.driver_name || (s.pit_lap ? '—' : 'FINISH');
+
+    // Update lap input if it drifted
+    if (parseInt($('pwsLapInput').value) !== currentLap) {
+      $('pwsLapInput').value = currentLap;
+    }
+  }
+</script>
+</body>
+</html>

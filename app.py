@@ -98,6 +98,18 @@ def init_db():
     cur.execute("ALTER TABLE stints ADD COLUMN IF NOT EXISTS tire_age_laps INTEGER")
     cur.execute("ALTER TABLE stints ADD COLUMN IF NOT EXISTS tire_wear_pct FLOAT")
     cur.execute("ALTER TABLE stints ADD COLUMN IF NOT EXISTS actual_fuel_added FLOAT")
+    cur.execute("ALTER TABLE race_plans ADD COLUMN IF NOT EXISTS telemetry_state TEXT")
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS competitors (
+            id            SERIAL PRIMARY KEY,
+            plan_id       INTEGER NOT NULL REFERENCES race_plans(id) ON DELETE CASCADE,
+            car_num       TEXT NOT NULL,
+            name          TEXT,
+            laps_per_tank INTEGER NOT NULL DEFAULT 25,
+            current_lap   INTEGER NOT NULL DEFAULT 0,
+            color         TEXT NOT NULL DEFAULT '#ff8a65'
+        )
+    """)
     cur.execute("""
         CREATE TABLE IF NOT EXISTS lap_times (
             id          SERIAL PRIMARY KEY,
@@ -299,11 +311,12 @@ def get_plan(plan_id):
     if not row:
         return jsonify({'error': 'Not found'}), 404
 
-    plan            = dict(row)
-    plan['config']  = json.loads(plan['config'])
-    plan['drivers'] = _get_drivers(plan_id)
-    plan['stints']  = _get_stints(plan_id)
-    plan['events']  = _get_events(plan_id)
+    plan                = dict(row)
+    plan['config']      = json.loads(plan['config'])
+    plan['drivers']     = _get_drivers(plan_id)
+    plan['stints']      = _get_stints(plan_id)
+    plan['events']      = _get_events(plan_id)
+    plan['competitors'] = _get_competitors(plan_id)
     return jsonify(plan)
 
 
@@ -347,11 +360,12 @@ def update_plan(plan_id):
         _save_stints(plan_id, strategy['stints'])
         db_commit()
 
-    plan            = dict(db_exec("SELECT * FROM race_plans WHERE id=%s", (plan_id,)).fetchone())
-    plan['config']  = json.loads(plan['config'])
-    plan['drivers'] = _get_drivers(plan_id)
-    plan['stints']  = _get_stints(plan_id)
-    plan['events']  = _get_events(plan_id)
+    plan                = dict(db_exec("SELECT * FROM race_plans WHERE id=%s", (plan_id,)).fetchone())
+    plan['config']      = json.loads(plan['config'])
+    plan['drivers']     = _get_drivers(plan_id)
+    plan['stints']      = _get_stints(plan_id)
+    plan['events']      = _get_events(plan_id)
+    plan['competitors'] = _get_competitors(plan_id)
     return jsonify(plan)
 
 
@@ -501,6 +515,307 @@ def import_laps(plan_id):
 
 
 # ---------------------------------------------------------------------------
+# Routes — API: telemetry bridge
+# ---------------------------------------------------------------------------
+
+@app.route('/api/plans/<int:plan_id>/telemetry', methods=['POST'])
+def push_telemetry(plan_id):
+    """
+    Receive a live state snapshot from the local telemetry bridge.
+    Body: { current_lap, fuel_level, last_lap_time_s?, session_time_s?, is_on_track? }
+    """
+    row = db_exec("SELECT id FROM race_plans WHERE id=%s", (plan_id,)).fetchone()
+    if not row:
+        return jsonify({'error': 'Not found'}), 404
+
+    data  = request.get_json() or {}
+    state = {
+        'current_lap':      data.get('current_lap'),
+        'fuel_level':       data.get('fuel_level'),
+        'last_lap_time_s':  data.get('last_lap_time_s'),
+        'session_time_s':   data.get('session_time_s'),
+        'is_on_track':      data.get('is_on_track'),
+        'updated_at':       datetime.utcnow().isoformat(),
+    }
+    db_exec("UPDATE race_plans SET telemetry_state=%s WHERE id=%s",
+            (json.dumps(state), plan_id))
+    db_commit()
+    return jsonify({'ok': True})
+
+
+@app.route('/api/plans/<int:plan_id>/telemetry', methods=['GET'])
+def get_telemetry(plan_id):
+    row = db_exec("SELECT telemetry_state FROM race_plans WHERE id=%s", (plan_id,)).fetchone()
+    if not row:
+        return jsonify({'error': 'Not found'}), 404
+    state = json.loads(row['telemetry_state']) if row['telemetry_state'] else {}
+    # Mark stale if updated more than 15 seconds ago
+    if state.get('updated_at'):
+        age_s = (datetime.utcnow() - datetime.fromisoformat(state['updated_at'])).total_seconds()
+        state['stale'] = age_s > 15
+    else:
+        state['stale'] = True
+    return jsonify(state)
+
+
+# ---------------------------------------------------------------------------
+# Routes — API: restrategize
+# ---------------------------------------------------------------------------
+
+@app.route('/api/plans/<int:plan_id>/restrategize', methods=['POST'])
+def restrategize(plan_id):
+    """
+    Recalculate strategy using a new lap time (e.g. derived from actual pace).
+    Body: { new_lap_time_s: float }
+    Updates config.lap_time_s and rebuilds stints.
+    """
+    row = db_exec("SELECT * FROM race_plans WHERE id=%s", (plan_id,)).fetchone()
+    if not row:
+        return jsonify({'error': 'Not found'}), 404
+
+    data         = request.get_json() or {}
+    new_lap_s    = float(data.get('new_lap_time_s', 0))
+    if new_lap_s <= 0:
+        return jsonify({'error': 'Invalid lap time'}), 400
+
+    config               = json.loads(row['config'])
+    config['lap_time_s'] = new_lap_s
+    now                  = datetime.utcnow().isoformat()
+
+    db_exec("UPDATE race_plans SET config=%s, updated_at=%s WHERE id=%s",
+            (json.dumps(config), now, plan_id))
+    db_commit()
+
+    drivers  = _get_drivers(plan_id)
+    strategy = calculate_strategy(config, drivers)
+    db_exec("DELETE FROM stints WHERE plan_id=%s", (plan_id,))
+    _save_stints(plan_id, strategy['stints'])
+    db_commit()
+
+    plan            = dict(db_exec("SELECT * FROM race_plans WHERE id=%s", (plan_id,)).fetchone())
+    plan['config']  = json.loads(plan['config'])
+    plan['drivers'] = _get_drivers(plan_id)
+    plan['stints']  = _get_stints(plan_id)
+    plan['events']  = _get_events(plan_id)
+    return jsonify(plan)
+
+
+# ---------------------------------------------------------------------------
+# Routes — API: competitors
+# ---------------------------------------------------------------------------
+
+@app.route('/api/plans/<int:plan_id>/competitors', methods=['GET'])
+def list_competitors(plan_id):
+    rows = db_exec(
+        "SELECT * FROM competitors WHERE plan_id=%s ORDER BY id", (plan_id,)
+    ).fetchall()
+    return jsonify([dict(r) for r in rows])
+
+
+@app.route('/api/plans/<int:plan_id>/competitors', methods=['POST'])
+def add_competitor(plan_id):
+    row = db_exec("SELECT id FROM race_plans WHERE id=%s", (plan_id,)).fetchone()
+    if not row:
+        return jsonify({'error': 'Not found'}), 404
+    data = request.get_json() or {}
+    comp_id = db_exec(
+        """INSERT INTO competitors (plan_id, car_num, name, laps_per_tank, current_lap, color)
+           VALUES (%s, %s, %s, %s, %s, %s) RETURNING id""",
+        (plan_id, data.get('car_num', '?'), data.get('name', ''),
+         data.get('laps_per_tank', 25), data.get('current_lap', 0),
+         data.get('color', '#ff8a65'))
+    ).fetchone()['id']
+    db_commit()
+    return jsonify({'id': comp_id}), 201
+
+
+@app.route('/api/plans/<int:plan_id>/competitors/<int:comp_id>', methods=['PATCH'])
+def update_competitor(plan_id, comp_id):
+    data    = request.get_json() or {}
+    allowed = ('car_num', 'name', 'laps_per_tank', 'current_lap', 'color')
+    fields, values = [], []
+    for k in allowed:
+        if k in data:
+            fields.append(f"{k}=%s")
+            values.append(data[k])
+    if not fields:
+        return jsonify({'ok': True})
+    values.extend([comp_id, plan_id])
+    db_exec(f"UPDATE competitors SET {', '.join(fields)} WHERE id=%s AND plan_id=%s",
+            tuple(values))
+    db_commit()
+    return jsonify({'ok': True})
+
+
+@app.route('/api/plans/<int:plan_id>/competitors/<int:comp_id>', methods=['DELETE'])
+def delete_competitor(plan_id, comp_id):
+    db_exec("DELETE FROM competitors WHERE id=%s AND plan_id=%s", (comp_id, plan_id))
+    db_commit()
+    return jsonify({'ok': True})
+
+
+# ---------------------------------------------------------------------------
+# Routes — API: debrief
+# ---------------------------------------------------------------------------
+
+@app.route('/api/plans/<int:plan_id>/debrief', methods=['GET'])
+def get_debrief(plan_id):
+    """
+    Return planned vs actual analysis per stint and per driver.
+    """
+    row = db_exec("SELECT * FROM race_plans WHERE id=%s", (plan_id,)).fetchone()
+    if not row:
+        return jsonify({'error': 'Not found'}), 404
+
+    config  = json.loads(row['config'])
+    stints  = _get_stints(plan_id)
+    drivers = _get_drivers(plan_id)
+    laps_raw = db_exec(
+        """SELECT lt.lap_num, lt.time_s, lt.driver_id, d.name AS driver_name, d.color AS driver_color
+           FROM lap_times lt LEFT JOIN drivers d ON lt.driver_id=d.id
+           WHERE lt.plan_id=%s ORDER BY lt.lap_num""",
+        (plan_id,)
+    ).fetchall()
+
+    lap_time_s = config.get('lap_time_s', 90)
+    mode_mult  = FUEL_MODE_MULTIPLIERS.get(config.get('fuel_mode', 'normal'), 1.0)
+    fpl        = config.get('fuel_per_lap_l', 0.92) * mode_mult
+
+    stint_analysis = []
+    for s in stints:
+        planned_laps  = s['end_lap'] - s['start_lap'] + 1
+        actual_end    = s['actual_end_lap'] or s['end_lap']
+        actual_laps   = actual_end - s['start_lap'] + 1
+        lap_delta     = actual_laps - planned_laps
+
+        # Lap times in this stint's range
+        stint_laps_data = [l for l in laps_raw
+                           if s['start_lap'] <= l['lap_num'] <= actual_end]
+        times     = [l['time_s'] for l in stint_laps_data]
+        avg_time  = sum(times) / len(times) if times else None
+        pace_delta = (avg_time - lap_time_s) if avg_time else None
+
+        stint_analysis.append({
+            'stint_num':         s['stint_num'],
+            'driver_name':       s['driver_name'],
+            'driver_color':      s['driver_color'],
+            'planned_laps':      planned_laps,
+            'actual_laps':       actual_laps,
+            'lap_delta':         lap_delta,
+            'planned_fuel':      s['fuel_load'],
+            'actual_fuel':       s['actual_fuel_added'],
+            'fuel_delta':        round(s['actual_fuel_added'] - s['fuel_load'], 2)
+                                 if s['actual_fuel_added'] is not None else None,
+            'avg_lap_time_s':    round(avg_time, 3) if avg_time else None,
+            'pace_delta_s':      round(pace_delta, 3) if pace_delta is not None else None,
+            'laps_logged':       len(times),
+        })
+
+    # Per-driver summary
+    driver_stats = {}
+    for d in drivers:
+        dtimes = [l['time_s'] for l in laps_raw if l['driver_id'] == d['id']]
+        if not dtimes:
+            continue
+        driver_stats[d['name']] = {
+            'name':    d['name'],
+            'color':   d['color'],
+            'laps':    len(dtimes),
+            'best':    min(dtimes),
+            'avg':     sum(dtimes) / len(dtimes),
+            'worst':   max(dtimes),
+            'std_dev': (sum((t - sum(dtimes)/len(dtimes))**2 for t in dtimes) / len(dtimes)) ** 0.5,
+        }
+
+    return jsonify({
+        'stints':       stint_analysis,
+        'driver_stats': list(driver_stats.values()),
+        'planned_lap_s': lap_time_s,
+        'planned_fpl':   fpl,
+    })
+
+
+# ---------------------------------------------------------------------------
+# Routes — API: undercut / overcut calculator
+# ---------------------------------------------------------------------------
+
+@app.route('/api/undercut', methods=['POST'])
+def undercut_calc():
+    """
+    Stateless calculator — no DB required.
+    Body:
+      our_gap_s        : float  — gap to competitor in seconds (positive = we're behind)
+      pit_loss_s       : float  — our total pit stop loss time
+      our_laps_to_pit  : int    — laps until our planned pit
+      comp_laps_to_pit : int    — laps until competitor's estimated pit
+      lap_time_s       : float  — our lap time in seconds
+      comp_lap_time_s  : float  — competitor lap time (0 = same as ours)
+
+    Returns: analysis for pit-now (undercut), pit-at-plan, and pit-late (overcut).
+    """
+    data = request.get_json() or {}
+    our_gap       = float(data.get('our_gap_s', 0))          # positive = behind
+    pit_loss      = float(data.get('pit_loss_s', 35))
+    our_laps      = int(data.get('our_laps_to_pit', 0))
+    comp_laps     = int(data.get('comp_laps_to_pit', 0))
+    lap_s         = float(data.get('lap_time_s', 90))
+    comp_lap_s    = float(data.get('comp_lap_time_s', 0)) or lap_s
+
+    def calc_exit_gap(our_extra_laps):
+        """
+        our_extra_laps: how many more laps we do compared to the undercut scenario (0 = pit now).
+        Returns gap to competitor on exit (negative = we exit ahead).
+        """
+        # We pit after our_extra_laps more laps; competitor pits at comp_laps
+        our_pit_in   = our_extra_laps          # laps until we pit from now
+        comp_pit_in  = comp_laps               # laps until comp pits
+
+        # Time on track from now until we exit pits
+        time_until_we_exit  = our_pit_in * lap_s + pit_loss
+        # Time until competitor exits pits (if they pit at comp_pit_in)
+        time_until_comp_exit = comp_pit_in * comp_lap_s + pit_loss
+
+        # During the time we're in our stop, competitor is still on track
+        # Gap adjustment: if we pit first, competitor gains track time on us
+        gap_at_our_exit = (our_gap                                # starting gap
+                           + comp_lap_s * our_pit_in              # comp covers laps while we run
+                           + pit_loss                             # comp gains our stop time
+                           - lap_s * our_pit_in)                  # we ran these laps too
+
+        # Simplified: after all stops are done, net gap change
+        # We're ahead if gap_at_our_exit < 0 (we exited in front)
+        return round(gap_at_our_exit, 1)
+
+    undercut_gap    = calc_exit_gap(0)               # pit this lap
+    planned_gap     = calc_exit_gap(our_laps)         # pit at plan
+    overcut_gap     = calc_exit_gap(our_laps + 3)     # pit 3 laps late
+
+    def label(gap):
+        if gap < -2:   return 'ahead'
+        if gap < 2:    return 'side-by-side'
+        return 'behind'
+
+    return jsonify({
+        'undercut': {'exit_gap_s': undercut_gap,  'position': label(undercut_gap),
+                     'description': 'Pit this lap (undercut)'},
+        'planned':  {'exit_gap_s': planned_gap,   'position': label(planned_gap),
+                     'description': f'Pit at planned lap (in {our_laps} laps)'},
+        'overcut':  {'exit_gap_s': overcut_gap,   'position': label(overcut_gap),
+                     'description': f'Pit 3 laps late (overcut)'},
+    })
+
+
+# ---------------------------------------------------------------------------
+# Routes — Mobile Pit Wall
+# ---------------------------------------------------------------------------
+
+@app.route('/pitwall')
+@app.route('/pitwall/<int:plan_id>')
+def pitwall(plan_id=None):
+    return render_template('pitwall.html', plan_id=plan_id or '')
+
+
+# ---------------------------------------------------------------------------
 # Routes — API: live mode
 # ---------------------------------------------------------------------------
 
@@ -612,7 +927,15 @@ def add_event(plan_id):
 @app.route('/api/plans/<int:plan_id>/live_status', methods=['GET'])
 def live_status(plan_id):
     """Return current stint, next pit window, and laps until pit."""
-    current_lap = request.args.get('lap', type=int, default=1)
+    current_lap = request.args.get('lap', type=int, default=None)
+    if current_lap is None:
+        # Fall back to telemetry-stored lap if available
+        plan_row_t = db_exec("SELECT telemetry_state FROM race_plans WHERE id=%s", (plan_id,)).fetchone()
+        if plan_row_t and plan_row_t['telemetry_state']:
+            ts = json.loads(plan_row_t['telemetry_state'])
+            current_lap = ts.get('current_lap') or 1
+        else:
+            current_lap = 1
     stints = _get_stints(plan_id)
     if not stints:
         return jsonify({'error': 'No stints found'}), 404
@@ -732,6 +1055,12 @@ def _get_stints(plan_id):
            WHERE s.plan_id=%s
            ORDER BY s.stint_num""",
         (plan_id,)
+    ).fetchall()
+
+
+def _get_competitors(plan_id):
+    return db_exec(
+        "SELECT * FROM competitors WHERE plan_id=%s ORDER BY id", (plan_id,)
     ).fetchall()
 
 

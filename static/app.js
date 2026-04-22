@@ -88,10 +88,11 @@ function initTabs() {
       btn.classList.add('active');
       $(`#tab-${tab}`).classList.add('active');
       state.activeTab = tab;
-      if (tab === 'stint'  && state.activePlan) renderStintTable(state.activePlan);
-      if (tab === 'live'   && state.activePlan) renderLiveMode(state.activePlan);
-      if (tab === 'laps'   && state.activePlan) renderLapTimes(state.activePlan);
-      if (tab === 'export' && state.activePlan) renderExport(state.activePlan);
+      if (tab === 'stint'   && state.activePlan) renderStintTable(state.activePlan);
+      if (tab === 'live'    && state.activePlan) { renderLiveMode(state.activePlan); loadCompetitors(); }
+      if (tab === 'laps'    && state.activePlan) renderLapTimes(state.activePlan);
+      if (tab === 'debrief' && state.activePlan) renderDebrief(state.activePlan);
+      if (tab === 'export'  && state.activePlan) renderExport(state.activePlan);
     });
   });
 }
@@ -133,8 +134,13 @@ async function loadPlan(id) {
     renderExport(plan);
     $('#planSelect').value = id;
     // Show plan ID badge in header and on live tab
-    const badge = `<span class="plan-id-badge" title="Use this ID in the Telemetry Agent">ID: ${plan.id}</span>`;
+    const badge = `<span class="plan-id-badge" title="Use this ID in the Telemetry Bridge">ID: ${plan.id}</span>`;
     document.querySelectorAll('.plan-id-display').forEach(el => el.innerHTML = badge);
+    // Update pit wall link with plan ID
+    const pwLink = $('#pitWallLinkBtn');
+    if (pwLink) pwLink.href = `/pitwall/${plan.id}`;
+    // Start telemetry polling
+    startTelemetryPolling();
   } catch (_) { /* server unreachable */ }
 }
 
@@ -1048,6 +1054,7 @@ async function renderLapTimes(plan) {
 
   renderLapStats(plan.drivers || [], laps);
   renderLapTable(laps, plan.id);
+  checkRestrategize(laps);
 }
 
 function autoSelectDriverForLap(stints, lapNum, drivers) {
@@ -1349,6 +1356,322 @@ function renderExport(plan) {
 
   exportEl.innerHTML   = html;
   actionsEl.style.display = 'flex';
+}
+
+// ---------------------------------------------------------------------------
+// Telemetry polling & auto-restrategize
+// ---------------------------------------------------------------------------
+let _telemetryInterval = null;
+let _suggestedLapS     = null;   // lap time from restrategize suggestion
+
+async function startTelemetryPolling() {
+  if (_telemetryInterval) clearInterval(_telemetryInterval);
+  _telemetryInterval = setInterval(pollTelemetry, 4000);
+  pollTelemetry();
+}
+
+async function pollTelemetry() {
+  if (!state.activePlan) return;
+  try {
+    const res = await fetch(`/api/plans/${state.activePlan.id}/telemetry`);
+    if (!res.ok) return;
+    const t = await res.json();
+
+    const live  = !t.stale && t.current_lap > 0;
+    const dot   = $('#telemetryDot');
+    const label = $('#telemetryLabel');
+    if (dot)   dot.className   = 'telemetry-dot' + (live ? ' live' : '');
+    if (label) label.textContent = live ? '● LIVE' : '○ Telemetry: offline';
+    if (label) label.className = 'telemetry-label' + (live ? ' live' : '');
+
+    // Auto-advance current lap from telemetry
+    if (live && t.current_lap) {
+      const lapInput = $('#currentLap');
+      if (lapInput && parseInt(lapInput.value) !== t.current_lap) {
+        lapInput.value = t.current_lap;
+        updateLiveStatus();
+      }
+    }
+  } catch (_) {}
+}
+
+function checkRestrategize(laps) {
+  // Compare rolling average of last 5 laps vs planned
+  if (!state.activePlan || laps.length < 3) return;
+  const plan      = state.activePlan;
+  const plannedS  = plan.config?.lap_time_s || 90;
+  const recent    = laps.slice(-5).map(l => l.time_s);
+  const avgS      = recent.reduce((a, b) => a + b, 0) / recent.length;
+  const deviationS = avgS - plannedS;
+
+  const banner  = $('#restrategizeBanner');
+  const msgEl   = $('#restrategizeMsg');
+  if (!banner || !msgEl) return;
+
+  if (Math.abs(deviationS) >= 2.0) {
+    const dir  = deviationS > 0 ? 'slower' : 'faster';
+    const diff = Math.abs(deviationS).toFixed(1);
+    msgEl.textContent = `⚡ Actual pace ${secToMinSec(avgS)} avg — ${diff}s ${dir} than planned. Update strategy?`;
+    _suggestedLapS    = avgS;
+    banner.style.display = 'flex';
+  } else {
+    banner.style.display = 'none';
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Competitor Tracker
+// ---------------------------------------------------------------------------
+let _activeCompetitorId = null;
+
+async function loadCompetitors() {
+  if (!state.activePlan) return;
+  try {
+    const res  = await fetch(`/api/plans/${state.activePlan.id}/competitors`);
+    if (!res.ok) return;
+    const list = await res.json();
+    state.activePlan.competitors = list;
+    renderCompetitors(list);
+  } catch (_) {}
+}
+
+function renderCompetitors(competitors) {
+  const el = $('#competitorList');
+  if (!el) return;
+  const plan  = state.activePlan;
+  const lapS  = plan?.config?.lap_time_s || 90;
+  const currentLap = parseInt($('#currentLap')?.value) || 1;
+
+  if (!competitors.length) {
+    el.innerHTML = '<p class="empty-state">Track competitor pit windows here.</p>';
+    return;
+  }
+
+  el.innerHTML = competitors.map(c => {
+    const lapsSinceLastPit  = c.current_lap % (c.laps_per_tank || 25);
+    const lapsUntilPit      = (c.laps_per_tank || 25) - lapsSinceLastPit;
+    const windowStatus      = lapsUntilPit <= 2 ? 'critical' : lapsUntilPit <= 5 ? 'warn' : 'ok';
+    const windowColor       = windowStatus === 'critical' ? 'var(--red)' : windowStatus === 'warn' ? 'var(--yellow)' : 'var(--green)';
+
+    return `
+      <div class="comp-card" data-comp-id="${c.id}">
+        <div class="comp-top">
+          <span class="comp-num" style="background:${c.color}">#${c.car_num}</span>
+          <span class="comp-name">${c.name || 'Unknown'}</span>
+          <span class="comp-laps-to-pit" style="color:${windowColor}">${lapsUntilPit} to pit</span>
+          <button class="comp-uc-btn btn-ghost btn-sm" data-comp-id="${c.id}" data-comp-name="${c.name || c.car_num}" title="Undercut/Overcut calculator">⇄</button>
+          <button class="comp-del-btn btn-ghost btn-sm" data-comp-id="${c.id}" title="Remove">✕</button>
+        </div>
+        <div class="comp-detail">
+          <label class="comp-detail-label">Current lap</label>
+          <input type="number" class="comp-cur-lap" data-comp-id="${c.id}" value="${c.current_lap}" min="0" />
+          <label class="comp-detail-label">Laps/tank</label>
+          <input type="number" class="comp-lpt" data-comp-id="${c.id}" value="${c.laps_per_tank}" min="1" max="200" />
+        </div>
+        <div class="comp-window-bar">
+          <div class="comp-window-fill" style="width:${Math.min((lapsSinceLastPit / c.laps_per_tank) * 100, 100)}%;background:${windowColor}"></div>
+        </div>
+      </div>
+    `;
+  }).join('');
+
+  // Wire inputs
+  $$('.comp-cur-lap', el).forEach(inp => {
+    inp.addEventListener('change', async () => {
+      const cid = inp.dataset.compId;
+      await fetch(`/api/plans/${plan.id}/competitors/${cid}`, {
+        method: 'PATCH', headers: {'Content-Type':'application/json'},
+        body: JSON.stringify({ current_lap: parseInt(inp.value) || 0 }),
+      });
+      loadCompetitors();
+    });
+  });
+  $$('.comp-lpt', el).forEach(inp => {
+    inp.addEventListener('change', async () => {
+      const cid = inp.dataset.compId;
+      await fetch(`/api/plans/${plan.id}/competitors/${cid}`, {
+        method: 'PATCH', headers: {'Content-Type':'application/json'},
+        body: JSON.stringify({ laps_per_tank: parseInt(inp.value) || 25 }),
+      });
+      loadCompetitors();
+    });
+  });
+  $$('.comp-del-btn', el).forEach(btn => {
+    btn.addEventListener('click', async () => {
+      await fetch(`/api/plans/${plan.id}/competitors/${btn.dataset.compId}`, { method: 'DELETE' });
+      loadCompetitors();
+    });
+  });
+  $$('.comp-uc-btn', el).forEach(btn => {
+    btn.addEventListener('click', () => {
+      _activeCompetitorId = parseInt(btn.dataset.compId);
+      const calcEl = $('#undercutCalc');
+      if (calcEl) {
+        calcEl.style.display = 'block';
+        $('#undercutCompName').textContent = btn.dataset.compName;
+        const comp = (state.activePlan?.competitors || []).find(c => c.id === _activeCompetitorId);
+        if (comp) {
+          const lapsSinceLastPit = comp.current_lap % (comp.laps_per_tank || 25);
+          $('#ucCompLaps').value = (comp.laps_per_tank || 25) - lapsSinceLastPit;
+        }
+      }
+    });
+  });
+}
+
+async function addCompetitor() {
+  if (!state.activePlan) return;
+  const carNum = prompt('Car number (e.g. 10):');
+  if (!carNum) return;
+  const name = prompt('Team/driver name (optional):') || '';
+  const lpt  = parseInt(prompt('Estimated laps per tank:', '25')) || 25;
+  await fetch(`/api/plans/${state.activePlan.id}/competitors`, {
+    method: 'POST', headers: {'Content-Type':'application/json'},
+    body: JSON.stringify({ car_num: carNum, name, laps_per_tank: lpt }),
+  });
+  loadCompetitors();
+}
+
+async function calcUndercut() {
+  const plan    = state.activePlan;
+  if (!plan) return;
+  const gap     = parseFloat($('#ucGap').value) || 0;
+  const ourLaps = parseInt($('#ucOurLaps').value) || 0;
+  const cmpLaps = parseInt($('#ucCompLaps').value) || 0;
+  const cmpLapT = parseFloat($('#ucCompLapTime').value) || 0;
+  const pitLoss = plan.config?.pit_loss_s || 35;
+  const lapS    = plan.config?.lap_time_s || 90;
+
+  const res = await fetch('/api/undercut', {
+    method: 'POST', headers: {'Content-Type':'application/json'},
+    body: JSON.stringify({
+      our_gap_s: gap, pit_loss_s: pitLoss,
+      our_laps_to_pit: ourLaps, comp_laps_to_pit: cmpLaps,
+      lap_time_s: lapS, comp_lap_time_s: cmpLapT,
+    }),
+  });
+  if (!res.ok) return;
+  const data = await res.json();
+
+  const posIcon = pos => pos === 'ahead' ? '✅' : pos === 'side-by-side' ? '⚡' : '❌';
+  const gapStr  = g => g === 0 ? 'dead even' : g < 0 ? `${Math.abs(g).toFixed(1)}s ahead` : `${g.toFixed(1)}s behind`;
+
+  $('#ucResult').innerHTML = `
+    <table class="uc-table">
+      <thead><tr><th>Scenario</th><th>Exit</th><th>Result</th></tr></thead>
+      <tbody>
+        <tr class="${data.undercut.position === 'ahead' ? 'uc-win' : ''}">
+          <td>${data.undercut.description}</td>
+          <td>${gapStr(data.undercut.exit_gap_s)}</td>
+          <td>${posIcon(data.undercut.position)}</td>
+        </tr>
+        <tr class="${data.planned.position === 'ahead' ? 'uc-win' : ''}">
+          <td>${data.planned.description}</td>
+          <td>${gapStr(data.planned.exit_gap_s)}</td>
+          <td>${posIcon(data.planned.position)}</td>
+        </tr>
+        <tr class="${data.overcut.position === 'ahead' ? 'uc-win' : ''}">
+          <td>${data.overcut.description}</td>
+          <td>${gapStr(data.overcut.exit_gap_s)}</td>
+          <td>${posIcon(data.overcut.position)}</td>
+        </tr>
+      </tbody>
+    </table>
+  `;
+}
+
+// ---------------------------------------------------------------------------
+// Post-Race Debrief
+// ---------------------------------------------------------------------------
+async function renderDebrief(plan) {
+  const el = $('#debriefContent');
+  if (!el) return;
+  if (!plan || !plan.stints?.length) {
+    el.innerHTML = '<p class="empty-state">Load a completed plan to view debrief.</p>';
+    return;
+  }
+
+  el.innerHTML = '<p class="empty-state" style="padding:1rem">Loading debrief…</p>';
+
+  try {
+    const res  = await fetch(`/api/plans/${plan.id}/debrief`);
+    if (!res.ok) { el.innerHTML = '<p class="empty-state">Failed to load debrief.</p>'; return; }
+    const data = await res.json();
+    const plannedS = data.planned_lap_s || 90;
+
+    let html = `<div class="debrief-grid">`;
+
+    // ── Driver summary cards ────────────────────────────────────────────
+    if (data.driver_stats?.length) {
+      html += `<div class="debrief-section"><h3>Driver Performance</h3><div class="debrief-driver-cards">`;
+      data.driver_stats.forEach(d => {
+        const avgDelta  = d.avg - plannedS;
+        const deltaStr  = `${avgDelta >= 0 ? '+' : ''}${avgDelta.toFixed(3)}s vs plan`;
+        const deltaCls  = Math.abs(avgDelta) < 0.5 ? 'delta-ok' : avgDelta > 0 ? 'delta-over' : 'delta-under';
+        const stdDev    = d.std_dev.toFixed(3);
+        const consistency = d.std_dev < 0.5 ? 'Excellent' : d.std_dev < 1.5 ? 'Good' : d.std_dev < 3 ? 'Moderate' : 'Inconsistent';
+        const consCls   = d.std_dev < 0.5 ? 'cons-excellent' : d.std_dev < 1.5 ? 'cons-good' : d.std_dev < 3 ? 'cons-mod' : 'cons-poor';
+        html += `
+          <div class="debrief-driver-card">
+            <div class="ddb-header">
+              <span class="driver-dot" style="background:${d.color}"></span>
+              <strong>${d.name}</strong>
+              <span class="ddb-laps">${d.laps} laps</span>
+            </div>
+            <div class="ddb-row"><span>Best</span><strong>${secToMinSecFull(d.best)}</strong></div>
+            <div class="ddb-row"><span>Average</span>
+              <strong>${secToMinSecFull(d.avg)} <span class="${deltaCls}" style="font-size:0.72rem">${deltaStr}</span></strong>
+            </div>
+            <div class="ddb-row"><span>Worst</span><strong>${secToMinSecFull(d.worst)}</strong></div>
+            <div class="ddb-row"><span>Std Dev</span><strong>±${stdDev}s</strong></div>
+            <div class="ddb-row"><span>Consistency</span>
+              <strong class="${consCls}">${consistency}</strong>
+            </div>
+          </div>`;
+      });
+      html += `</div></div>`;
+    }
+
+    // ── Stint comparison table ──────────────────────────────────────────
+    html += `
+      <div class="debrief-section">
+        <h3>Stint vs Plan</h3>
+        <div class="stint-table-wrap">
+        <table class="stint-table">
+          <thead>
+            <tr>
+              <th>#</th><th>Driver</th>
+              <th>Planned Laps</th><th>Actual Laps</th><th>Lap Δ</th>
+              <th>Planned Fuel</th><th>Actual Fuel</th><th>Fuel Δ</th>
+              <th>Avg Pace</th><th>Pace Δ</th>
+            </tr>
+          </thead>
+          <tbody>`;
+
+    data.stints.forEach(s => {
+      const lapDeltaCls  = s.lap_delta === 0 ? '' : s.lap_delta > 0 ? 'delta-over' : 'delta-under';
+      const fuelDeltaCls = !s.fuel_delta ? '' : Math.abs(s.fuel_delta) < 0.5 ? 'delta-ok' : s.fuel_delta > 0 ? 'delta-over' : 'delta-under';
+      const paceDeltaCls = !s.pace_delta_s ? '' : Math.abs(s.pace_delta_s) < 0.5 ? 'delta-ok' : s.pace_delta_s > 0 ? 'delta-over' : 'delta-under';
+      html += `
+        <tr>
+          <td>${s.stint_num}</td>
+          <td><span class="driver-dot" style="background:${s.driver_color||'#4fc3f7'}"></span>${s.driver_name||'—'}</td>
+          <td>${s.planned_laps}</td>
+          <td>${s.actual_laps}</td>
+          <td class="${lapDeltaCls}">${s.lap_delta >= 0 ? '+' : ''}${s.lap_delta}</td>
+          <td>${fmt(s.planned_fuel, 1)} gal</td>
+          <td>${s.actual_fuel != null ? fmt(s.actual_fuel, 1) + ' gal' : '—'}</td>
+          <td class="${fuelDeltaCls}">${s.fuel_delta != null ? (s.fuel_delta >= 0 ? '+' : '') + fmt(s.fuel_delta, 1) : '—'}</td>
+          <td>${s.avg_lap_time_s ? secToMinSecFull(s.avg_lap_time_s) : '—'}</td>
+          <td class="${paceDeltaCls}">${s.pace_delta_s != null ? (s.pace_delta_s >= 0 ? '+' : '') + s.pace_delta_s.toFixed(2) + 's' : '—'}</td>
+        </tr>`;
+    });
+
+    html += `</tbody></table></div></div></div>`;
+    el.innerHTML = html;
+  } catch (err) {
+    el.innerHTML = `<p class="empty-state">Error: ${err.message}</p>`;
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -1748,8 +2071,34 @@ function initEvents() {
   // CSV import
   $('#importCsvInput').addEventListener('change', function() {
     if (this.files[0]) importCsvLaps(this.files[0]);
-    this.value = '';  // reset so same file can be re-imported
+    this.value = '';
   });
+
+  // Restrategize banner
+  $('#restrategizeBtn').addEventListener('click', async () => {
+    if (!state.activePlan || !_suggestedLapS) return;
+    const res = await fetch(`/api/plans/${state.activePlan.id}/restrategize`, {
+      method: 'POST', headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({ new_lap_time_s: _suggestedLapS }),
+    });
+    if (!res.ok) return;
+    const plan = await res.json();
+    state.activePlan = plan;
+    renderStintTable(plan);
+    $('#restrategizeBanner').style.display = 'none';
+    // Switch to stint tab to show updated plan
+    $$('.tab-btn').forEach(b => b.classList.remove('active'));
+    $$('.tab-section').forEach(s => s.classList.remove('active'));
+    $('[data-tab="stint"]').classList.add('active');
+    $('#tab-stint').classList.add('active');
+  });
+  $('#restrategizeDismiss').addEventListener('click', () => {
+    $('#restrategizeBanner').style.display = 'none';
+  });
+
+  // Competitor tracker
+  $('#addCompetitorBtn').addEventListener('click', addCompetitor);
+  $('#ucCalcBtn').addEventListener('click', calcUndercut);
 
   // Log event
   $('#logEventBtn').addEventListener('click', async () => {

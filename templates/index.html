@@ -19,6 +19,7 @@
         <button class="tab-btn" data-tab="stint">Stint Plan</button>
         <button class="tab-btn" data-tab="live">Live Mode</button>
         <button class="tab-btn" data-tab="laps">Laps</button>
+        <button class="tab-btn" data-tab="debrief">Debrief</button>
         <button class="tab-btn" data-tab="export">Export</button>
       </nav>
       <div class="plan-selector">
@@ -192,6 +193,13 @@
         <div id="optimizeResult" class="optimize-result" style="display:none"></div>
       </div>
 
+      <!-- Restrategize banner (shown when actual pace deviates) -->
+      <div id="restrategizeBanner" class="restrategize-banner" style="display:none">
+        <span id="restrategizeMsg"></span>
+        <button class="btn-primary btn-sm" id="restrategizeBtn">Update Strategy</button>
+        <button class="btn-ghost btn-sm" id="restrategizeDismiss">✕</button>
+      </div>
+
       <div id="stintTableWrap">
         <p class="empty-state">Configure your race in Setup, then click "Calculate Strategy".</p>
       </div>
@@ -206,8 +214,13 @@
     <section id="tab-live" class="tab-section">
       <div class="live-mode-header">
         <h2 class="section-title">Live Race Mode</h2>
+        <div class="telemetry-status-wrap">
+          <span class="telemetry-dot" id="telemetryDot"></span>
+          <span class="telemetry-label" id="telemetryLabel">Telemetry: —</span>
+        </div>
         <div class="telemetry-hint plan-id-display"></div>
-        <button class="btn-ghost pit-wall-btn" id="pitWallBtn" title="Toggle pit wall view">⛶ Pit Wall Mode</button>
+        <a class="btn-ghost pit-wall-btn" id="pitWallLinkBtn" href="/pitwall" target="_blank" title="Open full mobile pit wall in new tab">⛶ Mobile Pit Wall ↗</a>
+        <button class="btn-ghost pit-wall-btn" id="pitWallBtn" title="Toggle overlay pit wall">⛶ Overlay</button>
       </div>
 
       <div class="live-grid">
@@ -229,6 +242,46 @@
           <h3>Stint Progress</h3>
           <div id="liveStintList" class="live-stint-list">
             <p class="empty-state">No stints loaded.</p>
+          </div>
+        </div>
+
+        <div class="card competitor-card">
+          <div class="competitor-header">
+            <h3>Competitor Tracker</h3>
+            <button class="btn-ghost btn-sm" id="addCompetitorBtn">+ Add</button>
+          </div>
+          <div id="competitorList">
+            <p class="empty-state">Track competitor pit windows here.</p>
+          </div>
+          <!-- Undercut / overcut calculator -->
+          <div id="undercutCalc" class="undercut-calc" style="display:none">
+            <div class="undercut-title">Undercut / Overcut vs <span id="undercutCompName">—</span></div>
+            <div class="undercut-inputs">
+              <div class="form-group">
+                <label>Gap to them</label>
+                <div class="input-row">
+                  <input type="number" id="ucGap" step="0.1" placeholder="s (+ = behind)" />
+                  <span class="unit">s</span>
+                </div>
+              </div>
+              <div class="form-group">
+                <label>Our laps to pit</label>
+                <input type="number" id="ucOurLaps" min="0" value="3" />
+              </div>
+              <div class="form-group">
+                <label>Their laps to pit</label>
+                <input type="number" id="ucCompLaps" min="0" value="3" />
+              </div>
+              <div class="form-group">
+                <label>Their lap time</label>
+                <div class="input-row">
+                  <input type="number" id="ucCompLapTime" step="0.1" placeholder="s (0=same)" />
+                  <span class="unit">s</span>
+                </div>
+              </div>
+            </div>
+            <button class="btn-secondary btn-sm" id="ucCalcBtn">Calculate</button>
+            <div id="ucResult" class="uc-result"></div>
           </div>
         </div>
 
@@ -322,6 +375,14 @@
           <p class="empty-state" style="padding:1rem">Load a plan and start logging laps.</p>
         </div>
 
+      </div>
+    </section>
+
+    <!-- ======= DEBRIEF TAB ======= -->
+    <section id="tab-debrief" class="tab-section">
+      <h2 class="section-title">Post-Race Debrief</h2>
+      <div id="debriefContent">
+        <p class="empty-state">Load a completed plan to view debrief.</p>
       </div>
     </section>
 
