@@ -1,0 +1,65 @@
+name: Build Telemetry Bridge
+
+on:
+  push:
+    branches: [master]
+    paths:
+      - 'telemetry_bridge.py'
+      - 'EnduranceTelemetry.spec'
+      - '.github/workflows/build_bridge.yml'
+
+jobs:
+  build:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          pip install pyinstaller pyirsdk requests
+
+      - name: Build exe
+        run: |
+          pyinstaller EnduranceTelemetry.spec --noconfirm
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: EnduranceTelemetry
+          path: dist/EnduranceTelemetry.exe
+          retention-days: 90
+
+      - name: Delete existing latest release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release delete latest --yes --cleanup-tag 2>$null || true
+
+      - name: Create latest release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release create latest dist/EnduranceTelemetry.exe `
+            --title "Telemetry Bridge — Latest Build" `
+            --notes "## Endurance Race Planner — Telemetry Bridge
+
+          **No installation required.** Just download and double-click.
+
+          ### How to use
+          1. Download \`EnduranceTelemetry.exe\` below
+          2. Double-click it — a settings window will open
+          3. Enter the server URL, your Plan ID (shown in the app header), and your driver name
+          4. Click **Start Bridge** — iRacing must be running
+
+          Your settings are saved automatically for next time.
+
+          ---
+          *Built automatically from the latest commit on master.*" `
+            --prerelease
