@@ -6,11 +6,13 @@ import psycopg2.extras
 from datetime import datetime
 from itertools import permutations
 from flask import Flask, render_template, request, jsonify, g
+from flask_socketio import SocketIO, join_room
 from dotenv import load_dotenv
 
 load_dotenv()
 
 app = Flask(__name__)
+socketio = SocketIO(app, async_mode='threading', cors_allowed_origins='*')
 DATABASE_URL = os.environ.get('DATABASE_URL')
 
 # ---------------------------------------------------------------------------
@@ -99,6 +101,7 @@ def init_db():
     cur.execute("ALTER TABLE stints ADD COLUMN IF NOT EXISTS tire_wear_pct FLOAT")
     cur.execute("ALTER TABLE stints ADD COLUMN IF NOT EXISTS actual_fuel_added FLOAT")
     cur.execute("ALTER TABLE race_plans ADD COLUMN IF NOT EXISTS telemetry_state TEXT")
+    cur.execute("ALTER TABLE competitors ADD COLUMN IF NOT EXISTS on_pit_road INTEGER NOT NULL DEFAULT 0")
     cur.execute("""
         CREATE TABLE IF NOT EXISTS competitors (
             id            SERIAL PRIMARY KEY,
@@ -522,7 +525,10 @@ def import_laps(plan_id):
 def push_telemetry(plan_id):
     """
     Receive a live state snapshot from the local telemetry bridge.
-    Body: { current_lap, fuel_level, last_lap_time_s?, session_time_s?, is_on_track? }
+    Body: { current_lap, fuel_level, last_lap_time_s?, session_time_s?,
+            is_on_track?, session_info? }
+    After saving, pushes a live_update event to all pit-wall clients
+    watching this plan via SocketIO.
     """
     row = db_exec("SELECT id FROM race_plans WHERE id=%s", (plan_id,)).fetchone()
     if not row:
@@ -535,11 +541,23 @@ def push_telemetry(plan_id):
         'last_lap_time_s':  data.get('last_lap_time_s'),
         'session_time_s':   data.get('session_time_s'),
         'is_on_track':      data.get('is_on_track'),
+        'session_info':     data.get('session_info'),
         'updated_at':       datetime.utcnow().isoformat(),
     }
     db_exec("UPDATE race_plans SET telemetry_state=%s WHERE id=%s",
             (json.dumps(state), plan_id))
     db_commit()
+
+    # Push live status to all pit-wall clients watching this plan
+    live = _calc_live_status(plan_id, data.get('current_lap'))
+    if live:
+        live['telemetry'] = {
+            'fuel_level':      state['fuel_level'],
+            'last_lap_time_s': state['last_lap_time_s'],
+            'stale':           False,
+        }
+        socketio.emit('live_update', live, to=f'plan_{plan_id}')
+
     return jsonify({'ok': True})
 
 
@@ -652,6 +670,159 @@ def delete_competitor(plan_id, comp_id):
     db_exec("DELETE FROM competitors WHERE id=%s AND plan_id=%s", (comp_id, plan_id))
     db_commit()
     return jsonify({'ok': True})
+
+
+@app.route('/api/plans/<int:plan_id>/competitors/sync', methods=['POST'])
+def sync_competitors(plan_id):
+    """
+    Bulk-update current_lap and on_pit_road for competitors the user has
+    already added manually.  Called by the telemetry bridge every ~5 s.
+    Does NOT auto-insert — the user controls which cars they track.
+    Body: { competitors: [{car_num, current_lap, on_pit_road}, ...] }
+    """
+    row = db_exec("SELECT id FROM race_plans WHERE id=%s", (plan_id,)).fetchone()
+    if not row:
+        return jsonify({'error': 'Not found'}), 404
+
+    data = request.get_json() or {}
+    for c in data.get('competitors', []):
+        car_num = str(c.get('car_num', '')).strip()
+        if not car_num:
+            continue
+        existing = db_exec(
+            "SELECT id FROM competitors WHERE plan_id=%s AND car_num=%s",
+            (plan_id, car_num)
+        ).fetchone()
+        if existing:
+            db_exec(
+                "UPDATE competitors SET current_lap=%s, on_pit_road=%s WHERE id=%s",
+                (int(c.get('current_lap', 0)),
+                 1 if c.get('on_pit_road') else 0,
+                 existing['id'])
+            )
+    db_commit()
+    return jsonify({'ok': True})
+
+
+@app.route('/api/plans/<int:plan_id>/fuel_emergency', methods=['GET'])
+def fuel_emergency(plan_id):
+    """
+    Given current lap + fuel level (from query params or stored telemetry),
+    return whether each fuel mode can survive to the planned pit window and
+    a plain-English recommendation.
+    """
+    row = db_exec("SELECT * FROM race_plans WHERE id=%s", (plan_id,)).fetchone()
+    if not row:
+        return jsonify({'error': 'Not found'}), 404
+
+    config       = json.loads(row['config'])
+    current_lap  = request.args.get('current_lap', type=int)
+    current_fuel = request.args.get('current_fuel', type=float)
+
+    # Fall back to stored telemetry
+    if current_lap is None or current_fuel is None:
+        ts = json.loads(row['telemetry_state']) if row.get('telemetry_state') else {}
+        if current_lap  is None: current_lap  = ts.get('current_lap') or 1
+        if current_fuel is None: current_fuel = ts.get('fuel_level')
+
+    if current_fuel is None:
+        return jsonify({'error': 'No fuel level available — start telemetry bridge first'}), 400
+
+    stints        = _get_stints(plan_id)
+    current_stint = next((s for s in stints
+                          if s['start_lap'] <= current_lap <= s['end_lap']), None)
+
+    if not current_stint or not current_stint.get('pit_lap'):
+        return jsonify({'status': 'ok', 'message': 'Final stint — no pit needed.'})
+
+    planned_pit  = current_stint['pit_lap']
+    laps_to_pit  = max(planned_pit - current_lap, 0)
+    base_fpl     = config.get('fuel_per_lap_l', 0.92)
+
+    scenarios = []
+    for mode, mult in FUEL_MODE_MULTIPLIERS.items():
+        eff_fpl     = base_fpl * mult
+        fuel_needed = laps_to_pit * eff_fpl
+        margin      = current_fuel - fuel_needed
+        laps_left   = current_fuel / eff_fpl if eff_fpl > 0 else 0
+        scenarios.append({
+            'mode':          mode,
+            'effective_fpl': round(eff_fpl, 3),
+            'fuel_needed':   round(fuel_needed, 2),
+            'fuel_margin':   round(margin, 2),
+            'laps_of_fuel':  round(laps_left, 1),
+            'can_make_it':   margin >= eff_fpl * 0.5,   # half-lap buffer
+        })
+
+    normal_s = next(s for s in scenarios if s['mode'] == 'normal')
+    save_s   = next(s for s in scenarios if s['mode'] == 'save')
+
+    if normal_s['can_make_it']:
+        rec = {'level': 'ok',
+               'message': 'Current fuel is sufficient on normal mode.'}
+    elif save_s['can_make_it']:
+        rec = {'level': 'warning',
+               'message': f"Switch to SAVE mode now. "
+                          f"Arrive with ~{save_s['fuel_margin']:.1f} gal margin."}
+    else:
+        earliest_pit = current_lap + max(int(save_s['laps_of_fuel']) - 1, 0)
+        rec = {'level': 'critical',
+               'message': f"Cannot reach lap {planned_pit} even on SAVE. "
+                          f"Must pit by lap {earliest_pit}."}
+
+    return jsonify({
+        'current_lap':     current_lap,
+        'current_fuel':    current_fuel,
+        'planned_pit_lap': planned_pit,
+        'laps_to_pit':     laps_to_pit,
+        'scenarios':       scenarios,
+        'recommendation':  rec,
+    })
+
+
+@app.route('/api/plans/<int:plan_id>/contingencies', methods=['GET'])
+def contingencies(plan_id):
+    """
+    Return three pre-computed alternative strategies alongside the main plan:
+      main      — current config as-is
+      save_mode — run save fuel mode (may eliminate 1+ stops)
+      short_fill — fill only 80% of tank each stop (+1 or more stops)
+    No DB writes — all computed on the fly.
+    """
+    row = db_exec("SELECT * FROM race_plans WHERE id=%s", (plan_id,)).fetchone()
+    if not row:
+        return jsonify({'error': 'Not found'}), 404
+
+    config  = json.loads(row['config'])
+    drivers = list(_get_drivers(plan_id))
+
+    main_result = calculate_strategy(config, drivers)
+
+    save_config  = {**config, 'fuel_mode': 'save'}
+    save_result  = calculate_strategy(save_config, drivers)
+
+    short_cap    = round(config['fuel_capacity_l'] * 0.80, 1)
+    short_config = {**config, 'fuel_capacity_l': short_cap}
+    short_result = calculate_strategy(short_config, drivers)
+
+    def summarise(result, label, note):
+        return {
+            'label':        label,
+            'note':         note,
+            'pit_stops':    result['pit_stops'],
+            'total_stints': result['total_stints'],
+            'laps_per_tank': result['laps_per_tank'],
+            'stints':       result['stints'],
+        }
+
+    return jsonify({
+        'main':       summarise(main_result,  'Main plan',
+                                f"Normal mode — {config['fuel_capacity_l']} gal fills"),
+        'save_mode':  summarise(save_result,  'Save-mode strategy',
+                                '8% fuel saving per lap — may reduce pit count'),
+        'short_fill': summarise(short_result, 'Short-fill strategy',
+                                f'{short_cap} gal fills ({int(80)}% tank) — faster stops, +stops'),
+    })
 
 
 # ---------------------------------------------------------------------------
@@ -924,21 +1095,22 @@ def add_event(plan_id):
     return jsonify({'id': event_id}), 201
 
 
-@app.route('/api/plans/<int:plan_id>/live_status', methods=['GET'])
-def live_status(plan_id):
-    """Return current stint, next pit window, and laps until pit."""
-    current_lap = request.args.get('lap', type=int, default=None)
+def _calc_live_status(plan_id, current_lap=None):
+    """
+    Core live-status calculation, usable by both the HTTP route and the
+    SocketIO telemetry push.  Returns a plain dict (not a Response).
+    """
     if current_lap is None:
-        # Fall back to telemetry-stored lap if available
         plan_row_t = db_exec("SELECT telemetry_state FROM race_plans WHERE id=%s", (plan_id,)).fetchone()
         if plan_row_t and plan_row_t['telemetry_state']:
             ts = json.loads(plan_row_t['telemetry_state'])
             current_lap = ts.get('current_lap') or 1
         else:
             current_lap = 1
+
     stints = _get_stints(plan_id)
     if not stints:
-        return jsonify({'error': 'No stints found'}), 404
+        return None
 
     current_stint = None
     next_stint    = None
@@ -950,42 +1122,34 @@ def live_status(plan_id):
             break
 
     if not current_stint:
-        return jsonify({'status': 'finished', 'current_lap': current_lap})
+        return {'status': 'finished', 'current_lap': current_lap}
 
     laps_until_pit = (current_stint['pit_lap'] or current_stint['end_lap']) - current_lap
 
-    plan_row   = db_exec("SELECT config FROM race_plans WHERE id=%s", (plan_id,)).fetchone()
-    config     = json.loads(plan_row['config'])
+    plan_row      = db_exec("SELECT config FROM race_plans WHERE id=%s", (plan_id,)).fetchone()
+    config        = json.loads(plan_row['config'])
     lap_time_s    = config.get('lap_time_s', 90)
     fuel_per_lap  = config.get('fuel_per_lap_l', 0.92)
     fuel_mode     = config.get('fuel_mode', 'normal')
     fuel_capacity = config.get('fuel_capacity_l', 18)
     effective_fpl = fuel_per_lap * FUEL_MODE_MULTIPLIERS.get(fuel_mode, 1.0)
 
-    mins_until_pit = round(laps_until_pit * lap_time_s / 60, 1)
+    mins_until_pit  = round(laps_until_pit * lap_time_s / 60, 1)
+    laps_into_stint = max(current_lap - current_stint['start_lap'], 0)
+    fuel_remaining  = max((current_stint['fuel_load'] or 0) - laps_into_stint * effective_fpl, 0)
+    laps_of_fuel    = (fuel_remaining / effective_fpl) if effective_fpl > 0 else 0
+    fuel_pct        = round((fuel_remaining / fuel_capacity) * 100) if fuel_capacity > 0 else 0
 
-    # Fuel estimate: planned load minus what's been burned this stint
-    laps_into_stint    = max(current_lap - current_stint['start_lap'], 0)
-    fuel_used_stint    = laps_into_stint * effective_fpl
-    fuel_remaining     = max((current_stint['fuel_load'] or 0) - fuel_used_stint, 0)
-    laps_of_fuel       = (fuel_remaining / effective_fpl) if effective_fpl > 0 else 0
-    fuel_pct           = round((fuel_remaining / fuel_capacity) * 100) if fuel_capacity > 0 else 0
-
-    # Pit window: earliest = now (always can pit), optimal = planned pit_lap,
-    # last_safe = last lap where we still have >=1 lap of fuel buffer after pitting
-    planned_pit    = current_stint.get('pit_lap')
-    last_safe_lap  = current_lap + max(int(math.floor(laps_of_fuel)) - 1, 0)
+    planned_pit       = current_stint.get('pit_lap')
+    last_safe_lap     = current_lap + max(int(math.floor(laps_of_fuel)) - 1, 0)
     pit_window_status = 'green'
     if planned_pit:
-        laps_past_opt = current_lap - planned_pit
-        if laps_past_opt > 0:
-            pit_window_status = 'red'     # past optimal pit lap
+        if current_lap > planned_pit:
+            pit_window_status = 'red'
         elif laps_until_pit <= 2:
-            pit_window_status = 'yellow'  # entering pit window
-        else:
-            pit_window_status = 'green'
+            pit_window_status = 'yellow'
 
-    return jsonify({
+    return {
         'status':             'racing',
         'current_lap':        current_lap,
         'current_stint':      dict(current_stint),
@@ -999,7 +1163,17 @@ def live_status(plan_id):
         'pit_window_optimal': planned_pit,
         'pit_window_last':    last_safe_lap,
         'pit_window_status':  pit_window_status,
-    })
+    }
+
+
+@app.route('/api/plans/<int:plan_id>/live_status', methods=['GET'])
+def live_status(plan_id):
+    """Return current stint, next pit window, and laps until pit."""
+    current_lap = request.args.get('lap', type=int, default=None)
+    result = _calc_live_status(plan_id, current_lap)
+    if result is None:
+        return jsonify({'error': 'No stints found'}), 404
+    return jsonify(result)
 
 
 # ---------------------------------------------------------------------------
@@ -1083,10 +1257,21 @@ def _save_stints(plan_id, stints):
 
 
 # ---------------------------------------------------------------------------
+# SocketIO events
+# ---------------------------------------------------------------------------
+
+@socketio.on('join_plan')
+def on_join_plan(data):
+    plan_id = data.get('plan_id')
+    if plan_id:
+        join_room(f'plan_{plan_id}')
+
+
+# ---------------------------------------------------------------------------
 # Bootstrap
 # ---------------------------------------------------------------------------
 
 if __name__ == '__main__':
     init_db()
     port = int(os.environ.get('PORT', 5002))
-    app.run(debug=False, host='0.0.0.0', port=port)
+    socketio.run(app, debug=False, host='0.0.0.0', port=port)

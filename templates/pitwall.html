@@ -309,12 +309,13 @@
   </div>
 </div>
 
+<script src="/socket.io/socket.io.js"></script>
 <script>
   const $ = id => document.getElementById(id);
   let planId   = null;
   let planName = '';
-  let autoInterval = null;
-  let currentLap   = 1;
+  let currentLap = 1;
+  let sock = null;
 
   // Pre-fill plan ID from URL if provided
   const urlPlanId = "{{ plan_id }}";
@@ -339,7 +340,7 @@
       $('pwPlanName').textContent = planName;
       $('setupScreen').style.display = 'none';
       $('pwScreen').style.display    = 'flex';
-      startPolling();
+      startSocket();
     } catch (e) {
       $('setupError').textContent = e.message;
       $('connectBtn').textContent = 'Connect';
@@ -347,7 +348,7 @@
   }
 
   $('pwDisconnect').addEventListener('click', () => {
-    clearInterval(autoInterval);
+    if (sock) { sock.disconnect(); sock = null; }
     $('pwScreen').style.display    = 'none';
     $('setupScreen').style.display = 'flex';
     $('connectBtn').textContent = 'Connect';
@@ -355,35 +356,43 @@
 
   $('pwsUpdate').addEventListener('click', () => {
     currentLap = parseInt($('pwsLapInput').value) || currentLap;
-    refresh();
+    refreshHttp();
   });
   $('pwsLapInput').addEventListener('keydown', e => {
-    if (e.key === 'Enter') { currentLap = parseInt($('pwsLapInput').value) || currentLap; refresh(); }
+    if (e.key === 'Enter') { currentLap = parseInt($('pwsLapInput').value) || currentLap; refreshHttp(); }
   });
 
-  function startPolling() {
-    refresh();
-    autoInterval = setInterval(async () => {
-      // Try telemetry first
-      try {
-        const tr = await fetch(`/api/plans/${planId}/telemetry`);
-        if (tr.ok) {
-          const t = await tr.json();
-          const live = !t.stale && t.current_lap > 0;
-          $('pwLiveDot').className   = 'pw-live-dot' + (live ? ' live' : '');
-          $('pwLiveLabel').className = 'pw-live-label' + (live ? ' live' : '');
-          $('pwLiveLabel').textContent = live ? 'LIVE' : 'Manual';
-          if (live && t.current_lap && t.current_lap !== currentLap) {
-            currentLap = t.current_lap;
-            $('pwsLapInput').value = currentLap;
-          }
-        }
-      } catch (_) {}
-      refresh();
-    }, 3000);
+  function startSocket() {
+    if (sock) sock.disconnect();
+    sock = io({ transports: ['websocket', 'polling'] });
+
+    sock.on('connect', () => {
+      sock.emit('join_plan', { plan_id: planId });
+      setLiveState(false, 'Waiting…');
+      refreshHttp();
+    });
+
+    sock.on('disconnect', () => setLiveState(false, 'Disconnected'));
+
+    sock.on('live_update', data => {
+      // Update live dot
+      setLiveState(true, 'LIVE');
+      // Sync lap from telemetry if bridge is pushing live data
+      if (data.telemetry && !data.telemetry.stale && data.telemetry.current_lap > 0) {
+        currentLap = data.telemetry.current_lap;
+        $('pwsLapInput').value = currentLap;
+      }
+      render(data);
+    });
   }
 
-  async function refresh() {
+  function setLiveState(live, label) {
+    $('pwLiveDot').className   = 'pw-live-dot' + (live ? ' live' : '');
+    $('pwLiveLabel').className = 'pw-live-label' + (live ? ' live' : '');
+    $('pwLiveLabel').textContent = label;
+  }
+
+  async function refreshHttp() {
     if (!planId) return;
     try {
       const res  = await fetch(`/api/plans/${planId}/live_status?lap=${currentLap}`);

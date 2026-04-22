@@ -984,6 +984,96 @@ async function updateLiveStatus() {
   `;
 
   updatePitWall(data);
+
+  // Fuel emergency + contingencies buttons (injected once)
+  if (!$('#fuelEmergencyBtn')) {
+    const liveStatus = $('#liveStatus');
+    if (liveStatus) {
+      const toolbar = document.createElement('div');
+      toolbar.className = 'live-action-toolbar';
+      toolbar.innerHTML = `
+        <button class="btn-ghost btn-sm" id="fuelEmergencyBtn">⚡ Fuel Emergency</button>
+        <button class="btn-ghost btn-sm" id="contingenciesBtn">⇄ Contingencies</button>
+      `;
+      liveStatus.after(toolbar);
+      $('#fuelEmergencyBtn').addEventListener('click', showFuelEmergency);
+      $('#contingenciesBtn').addEventListener('click', showContingencies);
+    }
+  }
+}
+
+async function showFuelEmergency() {
+  if (!state.activePlan) return;
+  const lap = parseInt($('#currentLap').value) || 1;
+  try {
+    const res = await fetch(`/api/plans/${state.activePlan.id}/fuel_emergency?lap=${lap}`);
+    if (!res.ok) return;
+    const d = await res.json();
+    const panel = $('#fuelEmergencyPanel') || (() => {
+      const p = document.createElement('div');
+      p.id = 'fuelEmergencyPanel';
+      p.className = 'live-panel';
+      $('#contingenciesBtn')?.parentElement.after(p);
+      return p;
+    })();
+    const rec = d.recommendation;
+    const recColor = rec.level === 'ok' ? 'var(--green)' : rec.level === 'warning' ? 'var(--yellow)' : 'var(--red)';
+    panel.innerHTML = `
+      <div class="live-panel-header">
+        <span>⚡ FUEL EMERGENCY</span>
+        <button class="btn-ghost btn-sm" onclick="this.closest('.live-panel').remove()">✕</button>
+      </div>
+      <p class="live-panel-rec" style="color:${recColor}">${rec.message}</p>
+      <div class="fe-scenarios">
+        ${d.scenarios.map(s => `
+          <div class="fe-row ${s.survives ? '' : 'fe-row-fail'}">
+            <span class="fe-mode">${s.mode.toUpperCase()}</span>
+            <span class="fe-laps">${s.laps_remaining} laps</span>
+            <span class="fe-status">${s.survives ? '✓ OK' : '✗ Short by ' + Math.abs(s.laps_short) + ' laps'}</span>
+          </div>
+        `).join('')}
+      </div>
+    `;
+    panel.style.display = panel.style.display === 'none' ? 'block' : 'block';
+  } catch (_) {}
+}
+
+async function showContingencies() {
+  if (!state.activePlan) return;
+  try {
+    const res = await fetch(`/api/plans/${state.activePlan.id}/contingencies`);
+    if (!res.ok) return;
+    const d = await res.json();
+    const panel = $('#contingenciesPanel') || (() => {
+      const p = document.createElement('div');
+      p.id = 'contingenciesPanel';
+      p.className = 'live-panel';
+      const toolbar = $('.live-action-toolbar');
+      if (toolbar) toolbar.after(p);
+      return p;
+    })();
+    panel.innerHTML = `
+      <div class="live-panel-header">
+        <span>⇄ CONTINGENCY STRATEGIES</span>
+        <button class="btn-ghost btn-sm" onclick="this.closest('.live-panel').remove()">✕</button>
+      </div>
+      ${['main','save_mode','short_fill'].map(key => {
+        const s = d[key];
+        if (!s) return '';
+        return `
+          <div class="ctg-scenario">
+            <div class="ctg-name">${s.label}</div>
+            <div class="ctg-stats">
+              <span>${s.total_stops} stops</span>
+              <span>${s.total_laps} laps</span>
+              <span>~${s.avg_fuel_per_stop} L/stop</span>
+            </div>
+            <div class="ctg-note">${s.note || ''}</div>
+          </div>
+        `;
+      }).join('')}
+    `;
+  } catch (_) {}
 }
 
 function updatePitWall(data) {
@@ -1392,6 +1482,38 @@ async function pollTelemetry() {
         updateLiveStatus();
       }
     }
+
+    // Session auto-import banner
+    if (t.session_info && !state.sessionImportDismissed) {
+      const si = t.session_info;
+      let banner = $('#sessionImportBanner');
+      if (!banner) {
+        banner = document.createElement('div');
+        banner.id = 'sessionImportBanner';
+        banner.className = 'session-import-banner';
+        banner.innerHTML = `
+          <span class="si-text">iRacing: <strong>${si.track_name || '?'}</strong> — ${si.series_name || '?'}</span>
+          <button class="si-import-btn btn-sm" id="siImportBtn">Import</button>
+          <button class="si-dismiss-btn btn-ghost btn-sm" id="siDismissBtn">✕</button>
+        `;
+        const liveTab = $('#liveTab') || document.querySelector('.tab-content.active');
+        if (liveTab) liveTab.prepend(banner);
+        $('#siImportBtn')?.addEventListener('click', () => {
+          if (state.activePlan) {
+            const nameInput = $('#planName');
+            if (nameInput && !nameInput.value) nameInput.value = si.track_name || '';
+            const trackInput = $('#trackName');
+            if (trackInput) trackInput.value = si.track_name || '';
+          }
+          state.sessionImportDismissed = true;
+          banner.remove();
+        });
+        $('#siDismissBtn')?.addEventListener('click', () => {
+          state.sessionImportDismissed = true;
+          banner.remove();
+        });
+      }
+    }
   } catch (_) {}
 }
 
@@ -1458,6 +1580,7 @@ function renderCompetitors(competitors) {
         <div class="comp-top">
           <span class="comp-num" style="background:${c.color}">#${c.car_num}</span>
           <span class="comp-name">${c.name || 'Unknown'}</span>
+          ${c.on_pit_road ? '<span class="comp-pitting-badge">PITTING</span>' : ''}
           <span class="comp-laps-to-pit" style="color:${windowColor}">${lapsUntilPit} to pit</span>
           <button class="comp-uc-btn btn-ghost btn-sm" data-comp-id="${c.id}" data-comp-name="${c.name || c.car_num}" title="Undercut/Overcut calculator">⇄</button>
           <button class="comp-del-btn btn-ghost btn-sm" data-comp-id="${c.id}" title="Remove">✕</button>

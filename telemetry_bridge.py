@@ -70,8 +70,9 @@ def save_config(cfg):
 # ---------------------------------------------------------------------------
 # Bridge logic (runs in a background thread)
 # ---------------------------------------------------------------------------
-POLL_INTERVAL   = 0.5
-TELEMETRY_EVERY = 1.0
+POLL_INTERVAL        = 0.5
+TELEMETRY_EVERY      = 1.0
+COMPETITOR_SYNC_EVERY = 5.0
 
 class BridgeThread(threading.Thread):
     def __init__(self, cfg, log_fn, status_fn):
@@ -103,8 +104,10 @@ class BridgeThread(threading.Thread):
         self.log(f'Plan ID: {plan_id}  |  Driver: {driver or "(any)"}')
         self.set_status('connecting')
 
-        last_lap_logged  = 0
-        last_telemetry_t = 0.0
+        last_lap_logged       = 0
+        last_telemetry_t      = 0.0
+        last_competitor_sync_t = 0.0
+        session_info_sent     = False
 
         while not self._stop_evt.is_set():
             try:
@@ -135,11 +138,27 @@ class BridgeThread(threading.Thread):
                         'session_time_s':  round(session_time, 1),
                         'is_on_track':     is_on_track,
                     }
+                    # Include session info once on first successful push
+                    if not session_info_sent:
+                        try:
+                            wi = ir['WeekendInfo']
+                            if wi:
+                                payload['session_info'] = {
+                                    'track_name':   wi.get('TrackName', ''),
+                                    'series_name':  wi.get('SeriesName', ''),
+                                    'session_name': wi.get('EventType', ''),
+                                    'track_length': wi.get('TrackLength', ''),
+                                }
+                        except Exception:
+                            pass
                     try:
                         r = requests.post(f'{base}/api/plans/{plan_id}/telemetry',
                                           json=payload, timeout=5)
                         if r.ok:
                             self.set_status('connected')
+                            if not session_info_sent and payload.get('session_info'):
+                                self.log(f'📍 Session: {payload["session_info"].get("track_name","?")} — {payload["session_info"].get("series_name","?")}')
+                                session_info_sent = True
                             mins = int(session_time // 60)
                             secs = session_time % 60
                             self.log(
@@ -154,6 +173,36 @@ class BridgeThread(threading.Thread):
                         self.log(f'Connection error: {e}')
                         self.set_status('error')
                     last_telemetry_t = now
+
+                # ── Competitor sync ─────────────────────────────────────
+                if now - last_competitor_sync_t >= COMPETITOR_SYNC_EVERY:
+                    try:
+                        drivers_info = ir['DriverInfo']
+                        car_idx_lap  = ir['CarIdxLap']
+                        car_idx_pit  = ir['CarIdxOnPitRoad']
+                        if drivers_info and car_idx_lap is not None:
+                            idx_to_num = {
+                                d['CarIdx']: str(d.get('CarNumber', '')).strip()
+                                for d in drivers_info.get('Drivers', [])
+                                if d.get('CarNumber')
+                            }
+                            competitors = []
+                            for idx, car_num in idx_to_num.items():
+                                if idx < len(car_idx_lap):
+                                    competitors.append({
+                                        'car_num':     car_num,
+                                        'current_lap': int(car_idx_lap[idx] or 0),
+                                        'on_pit_road': bool(car_idx_pit[idx]) if car_idx_pit and idx < len(car_idx_pit) else False,
+                                    })
+                            if competitors:
+                                requests.post(
+                                    f'{base}/api/plans/{plan_id}/competitors/sync',
+                                    json={'competitors': competitors},
+                                    timeout=5,
+                                )
+                    except Exception:
+                        pass
+                    last_competitor_sync_t = now
 
                 # ── Lap completed ───────────────────────────────────────
                 if (lap_completed > 0
