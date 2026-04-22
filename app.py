@@ -101,7 +101,6 @@ def init_db():
     cur.execute("ALTER TABLE stints ADD COLUMN IF NOT EXISTS tire_wear_pct FLOAT")
     cur.execute("ALTER TABLE stints ADD COLUMN IF NOT EXISTS actual_fuel_added FLOAT")
     cur.execute("ALTER TABLE race_plans ADD COLUMN IF NOT EXISTS telemetry_state TEXT")
-    cur.execute("ALTER TABLE competitors ADD COLUMN IF NOT EXISTS on_pit_road INTEGER NOT NULL DEFAULT 0")
     cur.execute("""
         CREATE TABLE IF NOT EXISTS competitors (
             id            SERIAL PRIMARY KEY,
@@ -113,6 +112,7 @@ def init_db():
             color         TEXT NOT NULL DEFAULT '#ff8a65'
         )
     """)
+    cur.execute("ALTER TABLE competitors ADD COLUMN IF NOT EXISTS on_pit_road INTEGER NOT NULL DEFAULT 0")
     cur.execute("""
         CREATE TABLE IF NOT EXISTS lap_times (
             id          SERIAL PRIMARY KEY,
