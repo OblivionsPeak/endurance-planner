@@ -12,6 +12,7 @@ from flask_socketio import SocketIO, join_room
 from dotenv import load_dotenv
 
 load_dotenv()
+# Required env vars: DATABASE_URL, SECRET_KEY, ANTHROPIC_API_KEY, OPENAI_API_KEY
 
 app = Flask(__name__)
 app.secret_key = os.environ.get('SECRET_KEY', secrets.token_hex(32))
@@ -21,6 +22,24 @@ DATABASE_URL = os.environ.get('DATABASE_URL')
 
 def _hash_password(password: str) -> str:
     return hashlib.sha256(password.encode()).hexdigest()
+
+
+def _get_engineer_account(token: str):
+    """Return engineer account row for a valid token, or None."""
+    row = db_exec(
+        """SELECT a.* FROM engineer_accounts a
+           JOIN engineer_tokens t ON t.account_id = a.id
+           WHERE t.token = %s""",
+        (token,)
+    ).fetchone()
+    if row:
+        # Update last_used
+        db_exec("UPDATE engineer_tokens SET last_used=%s WHERE token=%s",
+                (datetime.utcnow().isoformat(), token))
+        db_commit()
+    return dict(row) if row else None
+
+FREE_QUERY_LIMIT = 50  # queries per day on free tier
 
 
 def _current_user():
@@ -172,6 +191,25 @@ def init_db():
             time_s      FLOAT NOT NULL,
             note        TEXT,
             logged_at   TEXT NOT NULL
+        )
+    """)
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS engineer_accounts (
+            id            SERIAL PRIMARY KEY,
+            email         TEXT NOT NULL UNIQUE,
+            display_name  TEXT NOT NULL,
+            password_hash TEXT NOT NULL,
+            queries_today INTEGER NOT NULL DEFAULT 0,
+            query_date    TEXT,
+            created_at    TEXT NOT NULL
+        )
+    """)
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS engineer_tokens (
+            token       TEXT PRIMARY KEY,
+            account_id  INTEGER NOT NULL REFERENCES engineer_accounts(id) ON DELETE CASCADE,
+            created_at  TEXT NOT NULL,
+            last_used   TEXT
         )
     """)
     conn.commit()
@@ -394,6 +432,189 @@ def auth_me():
         'display_name': user['display_name'],
         'invite_code':  team['invite_code'] if team else None,
     })
+
+
+# ---------------------------------------------------------------------------
+# Routes — Engineer backend proxy
+# ---------------------------------------------------------------------------
+
+@app.route('/engineer/register', methods=['POST'])
+def engineer_register():
+    data         = request.get_json() or {}
+    email        = data.get('email', '').strip().lower()
+    display_name = data.get('display_name', '').strip()
+    password     = data.get('password', '')
+
+    if not all([email, display_name, password]):
+        return jsonify({'error': 'All fields required'}), 400
+    if len(password) < 8:
+        return jsonify({'error': 'Password must be at least 8 characters'}), 400
+
+    existing = db_exec(
+        "SELECT id FROM engineer_accounts WHERE email=%s", (email,)
+    ).fetchone()
+    if existing:
+        return jsonify({'error': 'Email already registered'}), 409
+
+    now = datetime.utcnow().isoformat()
+    account_row = db_exec(
+        """INSERT INTO engineer_accounts
+           (email, display_name, password_hash, created_at)
+           VALUES (%s, %s, %s, %s) RETURNING id""",
+        (email, display_name, _hash_password(password), now)
+    ).fetchone()
+    account_id = account_row['id']
+
+    token = secrets.token_hex(32)
+    db_exec(
+        "INSERT INTO engineer_tokens (token, account_id, created_at) VALUES (%s, %s, %s)",
+        (token, account_id, now)
+    )
+    db_commit()
+    return jsonify({
+        'ok': True,
+        'token': token,
+        'display_name': display_name,
+        'queries_today': 0,
+        'query_limit': FREE_QUERY_LIMIT,
+    })
+
+
+@app.route('/engineer/login', methods=['POST'])
+def engineer_login():
+    data     = request.get_json() or {}
+    email    = data.get('email', '').strip().lower()
+    password = data.get('password', '')
+
+    row = db_exec(
+        "SELECT * FROM engineer_accounts WHERE email=%s AND password_hash=%s",
+        (email, _hash_password(password))
+    ).fetchone()
+    if not row:
+        return jsonify({'error': 'Invalid email or password'}), 401
+
+    account = dict(row)
+    now     = datetime.utcnow().isoformat()
+    token   = secrets.token_hex(32)
+    db_exec(
+        "INSERT INTO engineer_tokens (token, account_id, created_at) VALUES (%s, %s, %s)",
+        (token, account['id'], now)
+    )
+    db_commit()
+
+    # Reset daily count if it's a new day
+    today = datetime.utcnow().strftime('%Y-%m-%d')
+    if account.get('query_date') != today:
+        db_exec(
+            "UPDATE engineer_accounts SET queries_today=0, query_date=%s WHERE id=%s",
+            (today, account['id'])
+        )
+        db_commit()
+        account['queries_today'] = 0
+
+    return jsonify({
+        'ok': True,
+        'token': token,
+        'display_name': account['display_name'],
+        'queries_today': account['queries_today'],
+        'query_limit': FREE_QUERY_LIMIT,
+    })
+
+
+@app.route('/engineer/ask', methods=['POST'])
+def engineer_ask():
+    """
+    Proxy AI queries to Claude Haiku on behalf of authenticated engineer users.
+    Body: { token, system_prompt, question }
+    Returns: { answer, queries_today, query_limit }
+    """
+    data          = request.get_json() or {}
+    token         = data.get('token', '')
+    system_prompt = data.get('system_prompt', '')
+    question      = data.get('question', '')
+
+    if not token:
+        return jsonify({'error': 'Token required'}), 401
+    if not question:
+        return jsonify({'error': 'Question required'}), 400
+
+    account = _get_engineer_account(token)
+    if not account:
+        return jsonify({'error': 'Invalid or expired token'}), 401
+
+    # Check / reset daily quota
+    today = datetime.utcnow().strftime('%Y-%m-%d')
+    if account.get('query_date') != today:
+        db_exec(
+            "UPDATE engineer_accounts SET queries_today=0, query_date=%s WHERE id=%s",
+            (today, account['id'])
+        )
+        db_commit()
+        account['queries_today'] = 0
+
+    if account['queries_today'] >= FREE_QUERY_LIMIT:
+        return jsonify({
+            'error': f"Daily limit of {FREE_QUERY_LIMIT} queries reached. Resets at midnight UTC.",
+            'quota_exceeded': True,
+        }), 429
+
+    # Call Claude Haiku
+    try:
+        import anthropic
+        client = anthropic.Anthropic(api_key=os.environ.get('ANTHROPIC_API_KEY', ''))
+        msg = client.messages.create(
+            model='claude-haiku-4-5-20251001',
+            max_tokens=200,
+            system=system_prompt or 'You are a professional endurance racing engineer. Be concise — 1-3 sentences.',
+            messages=[{'role': 'user', 'content': question}],
+        )
+        answer = msg.content[0].text.strip()
+    except Exception as e:
+        return jsonify({'error': f'AI service error: {str(e)[:100]}'}), 500
+
+    # Increment usage
+    db_exec(
+        "UPDATE engineer_accounts SET queries_today=queries_today+1, query_date=%s WHERE id=%s",
+        (today, account['id'])
+    )
+    db_commit()
+
+    return jsonify({
+        'answer':       answer,
+        'queries_today': account['queries_today'] + 1,
+        'query_limit':  FREE_QUERY_LIMIT,
+    })
+
+
+@app.route('/engineer/transcribe', methods=['POST'])
+def engineer_transcribe():
+    """
+    Accept a WAV audio file upload, transcribe via OpenAI Whisper, return text.
+    Form fields: token (str), audio (file)
+    """
+    token = request.form.get('token', '')
+    if not token:
+        return jsonify({'error': 'Token required'}), 401
+
+    account = _get_engineer_account(token)
+    if not account:
+        return jsonify({'error': 'Invalid or expired token'}), 401
+
+    audio_file = request.files.get('audio')
+    if not audio_file:
+        return jsonify({'error': 'Audio file required'}), 400
+
+    try:
+        import openai
+        client = openai.OpenAI(api_key=os.environ.get('OPENAI_API_KEY', ''))
+        transcript = client.audio.transcriptions.create(
+            model='whisper-1',
+            file=audio_file,
+            response_format='text',
+        )
+        return jsonify({'transcript': transcript.strip()})
+    except Exception as e:
+        return jsonify({'error': f'Transcription error: {str(e)[:100]}'}), 500
 
 
 # ---------------------------------------------------------------------------
