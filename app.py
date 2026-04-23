@@ -607,9 +607,10 @@ def engineer_transcribe():
     try:
         import openai
         client = openai.OpenAI(api_key=os.environ.get('OPENAI_API_KEY', ''))
+        audio_bytes = audio_file.read()
         transcript = client.audio.transcriptions.create(
             model='whisper-1',
-            file=audio_file,
+            file=('audio.wav', audio_bytes, 'audio/wav'),
             response_format='text',
         )
         return jsonify({'transcript': transcript.strip()})
