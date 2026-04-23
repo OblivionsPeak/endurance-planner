@@ -1392,6 +1392,86 @@ def live_status(plan_id):
 
 
 # ---------------------------------------------------------------------------
+# Routes — API: AI engineer context
+# ---------------------------------------------------------------------------
+
+@app.route('/api/plans/<int:plan_id>/engineer-context', methods=['GET'])
+def engineer_context(plan_id):
+    """
+    Returns a single rich JSON snapshot for the AI Race Engineer.
+    Combines plan config, live status, telemetry, competitors, and pit history.
+    """
+    # Fetch the plan row
+    row = db_exec("SELECT * FROM race_plans WHERE id=%s", (plan_id,)).fetchone()
+    if not row:
+        return jsonify({'error': 'Not found'}), 404
+
+    config  = json.loads(row['config'])
+    drivers = _get_drivers(plan_id)
+
+    # Strategy summary for total_stints / pit_stops counts
+    strategy_meta = calculate_strategy(config, list(drivers))
+
+    # Build plan block
+    plan_block = {
+        'id':              plan_id,
+        'name':            row['name'],
+        'config':          config,
+        'drivers':         [dict(d) for d in drivers],
+        'total_stints':    strategy_meta['total_stints'],
+        'pit_stops_planned': strategy_meta['pit_stops'],
+    }
+
+    # Live status
+    live_block = _calc_live_status(plan_id, current_lap=None)
+
+    # Telemetry
+    telem_row   = db_exec("SELECT telemetry_state FROM race_plans WHERE id=%s", (plan_id,)).fetchone()
+    telem_state = json.loads(telem_row['telemetry_state']) if (telem_row and telem_row['telemetry_state']) else {}
+    if telem_state.get('updated_at'):
+        age_s = (datetime.utcnow() - datetime.fromisoformat(telem_state['updated_at'])).total_seconds()
+        telem_stale = age_s > 15
+    else:
+        telem_stale = True
+
+    telemetry_block = {
+        'current_lap':       telem_state.get('current_lap'),
+        'fuel_level':        telem_state.get('fuel_level'),
+        'last_lap_time_s':   telem_state.get('last_lap_time_s'),
+        'session_time_s':    telem_state.get('session_time_s'),
+        'fuel_delta':        telem_state.get('fuel_delta'),
+        'stale':             telem_stale,
+    }
+
+    # Competitors
+    competitors_rows = _get_competitors(plan_id)
+    competitors_block = [
+        {
+            'car_num':      c.get('car_num'),
+            'name':         c.get('name'),
+            'current_lap':  c.get('current_lap'),
+            'on_pit_road':  c.get('on_pit_road'),
+        }
+        for c in (dict(r) for r in competitors_rows)
+    ]
+
+    # Recent pit stops (last 5 completed)
+    pit_rows = db_exec(
+        "SELECT entry_lap, duration_s FROM pit_stops WHERE plan_id=%s AND duration_s IS NOT NULL ORDER BY id DESC LIMIT 5",
+        (plan_id,)
+    ).fetchall()
+    recent_pit_stops = [dict(r) for r in pit_rows]
+
+    return jsonify({
+        'plan':             plan_block,
+        'live':             live_block,
+        'telemetry':        telemetry_block,
+        'competitors':      competitors_block,
+        'recent_pit_stops': recent_pit_stops,
+    })
+
+
+# ---------------------------------------------------------------------------
 # Routes — API: export
 # ---------------------------------------------------------------------------
 

@@ -1,5 +1,21 @@
 .env
 venv/
+telemetry_venv/
 __pycache__/
 *.pyc
 planner.db
+
+# PyInstaller build artifacts
+build/
+dist/
+*.spec.bak
+
+# Personal config files (contain API keys — never commit)
+engineer_config.json
+race_plan.json
+bridge_config.json
+
+# Temp / OS files
+=*
+~$*
+*.tmp
