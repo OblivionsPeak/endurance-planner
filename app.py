@@ -604,21 +604,19 @@ def engineer_transcribe():
     if not audio_file:
         return jsonify({'error': 'Audio file required'}), 400
 
-    api_key = os.environ.get('OPENAI_API_KEY', '')
+    api_key = os.environ.get('GROQ_API_KEY', '')
     if not api_key:
-        return jsonify({'error': 'Server config error: OPENAI_API_KEY not set'}), 500
+        return jsonify({'error': 'Server config error: GROQ_API_KEY not set'}), 500
     try:
-        import openai
-        client = openai.OpenAI(api_key=api_key)
+        from groq import Groq
+        client = Groq(api_key=api_key)
         audio_bytes = audio_file.read()
         transcript = client.audio.transcriptions.create(
-            model='whisper-1',
+            model='whisper-large-v3-turbo',
             file=('audio.wav', audio_bytes, 'audio/wav'),
             response_format='text',
         )
         return jsonify({'transcript': transcript.strip()})
-    except openai.AuthenticationError:
-        return jsonify({'error': 'Server config error: invalid OpenAI API key'}), 500
     except Exception as e:
         return jsonify({'error': f'Transcription error: {str(e)[:120]}'}), 500
 
