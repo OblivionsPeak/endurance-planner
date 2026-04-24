@@ -521,6 +521,26 @@ def engineer_login():
     })
 
 
+@app.route('/engineer/validate', methods=['POST'])
+def engineer_validate():
+    """Validate a stored token and return fresh account info."""
+    data  = request.get_json() or {}
+    token = data.get('token', '')
+    if not token:
+        return jsonify({'error': 'Token required'}), 401
+
+    account = _get_engineer_account(token)
+    if not account:
+        return jsonify({'error': 'Invalid or expired token'}), 401
+
+    return jsonify({
+        'ok':           True,
+        'display_name': account['display_name'],
+        'queries_today': account['queries_today'],
+        'query_limit':  FREE_QUERY_LIMIT,
+    })
+
+
 @app.route('/engineer/ask', methods=['POST'])
 def engineer_ask():
     """
