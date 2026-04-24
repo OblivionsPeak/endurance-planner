@@ -212,6 +212,34 @@ def init_db():
             last_used   TEXT
         )
     """)
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS engineer_sessions (
+            id                SERIAL PRIMARY KEY,
+            account_id        INTEGER NOT NULL REFERENCES engineer_accounts(id) ON DELETE CASCADE,
+            track_name        TEXT NOT NULL,
+            car_name          TEXT,
+            session_date      TEXT NOT NULL,
+            race_duration_hrs FLOAT,
+            total_laps        INTEGER,
+            best_lap_s        FLOAT,
+            avg_lap_s         FLOAT,
+            avg_fpl_l         FLOAT,
+            total_stints      INTEGER,
+            started_at        TEXT NOT NULL,
+            ended_at          TEXT
+        )
+    """)
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS engineer_laps (
+            id          SERIAL PRIMARY KEY,
+            session_id  INTEGER NOT NULL REFERENCES engineer_sessions(id) ON DELETE CASCADE,
+            lap_num     INTEGER NOT NULL,
+            lap_time_s  FLOAT NOT NULL,
+            fuel_used_l FLOAT,
+            position    INTEGER,
+            logged_at   TEXT NOT NULL
+        )
+    """)
     conn.commit()
     cur.close()
     conn.close()
@@ -539,6 +567,118 @@ def engineer_validate():
         'queries_today': account['queries_today'],
         'query_limit':  FREE_QUERY_LIMIT,
     })
+
+
+@app.route('/engineer/session/start', methods=['POST'])
+def engineer_session_start():
+    data       = request.get_json() or {}
+    token      = data.get('token', '')
+    track_name = data.get('track_name', 'Unknown')
+    car_name   = data.get('car_name', '')
+    duration   = data.get('race_duration_hrs', 0)
+
+    if not token:
+        return jsonify({'error': 'Token required'}), 401
+    account = _get_engineer_account(token)
+    if not account:
+        return jsonify({'error': 'Invalid token'}), 401
+
+    now = datetime.utcnow().isoformat()
+    cur = db_exec(
+        """INSERT INTO engineer_sessions
+           (account_id, track_name, car_name, session_date, race_duration_hrs, started_at)
+           VALUES (%s, %s, %s, %s, %s, %s) RETURNING id""",
+        (account['id'], track_name, car_name,
+         datetime.utcnow().strftime('%Y-%m-%d'), duration, now)
+    )
+    session_id = cur.fetchone()['id']
+    db_commit()
+    return jsonify({'ok': True, 'session_id': session_id})
+
+
+@app.route('/engineer/session/lap', methods=['POST'])
+def engineer_session_lap():
+    data       = request.get_json() or {}
+    token      = data.get('token', '')
+    session_id = data.get('session_id')
+    lap_num    = data.get('lap_num', 0)
+    lap_time_s = data.get('lap_time_s', 0.0)
+    fuel_used  = data.get('fuel_used_l')
+    position   = data.get('position')
+
+    if not token or not session_id:
+        return jsonify({'error': 'Token and session_id required'}), 400
+    account = _get_engineer_account(token)
+    if not account:
+        return jsonify({'error': 'Invalid token'}), 401
+
+    now = datetime.utcnow().isoformat()
+    db_exec(
+        """INSERT INTO engineer_laps (session_id, lap_num, lap_time_s, fuel_used_l, position, logged_at)
+           VALUES (%s, %s, %s, %s, %s, %s)""",
+        (session_id, lap_num, lap_time_s, fuel_used, position, now)
+    )
+    db_commit()
+    return jsonify({'ok': True})
+
+
+@app.route('/engineer/session/end', methods=['POST'])
+def engineer_session_end():
+    data       = request.get_json() or {}
+    token      = data.get('token', '')
+    session_id = data.get('session_id')
+    total_stints = data.get('total_stints', 0)
+
+    if not token or not session_id:
+        return jsonify({'error': 'Token and session_id required'}), 400
+    account = _get_engineer_account(token)
+    if not account:
+        return jsonify({'error': 'Invalid token'}), 401
+
+    # Compute stats from recorded laps
+    cur = db_exec(
+        "SELECT lap_time_s, fuel_used_l FROM engineer_laps WHERE session_id=%s",
+        (session_id,)
+    )
+    laps = cur.fetchall()
+    total_laps = len(laps)
+    best_lap   = min((r['lap_time_s'] for r in laps), default=None)
+    avg_lap    = (sum(r['lap_time_s'] for r in laps) / total_laps) if laps else None
+    fuel_laps  = [r['fuel_used_l'] for r in laps if r['fuel_used_l']]
+    avg_fpl    = (sum(fuel_laps) / len(fuel_laps)) if fuel_laps else None
+
+    now = datetime.utcnow().isoformat()
+    db_exec(
+        """UPDATE engineer_sessions
+           SET ended_at=%s, total_laps=%s, best_lap_s=%s, avg_lap_s=%s,
+               avg_fpl_l=%s, total_stints=%s
+           WHERE id=%s AND account_id=%s""",
+        (now, total_laps, best_lap, avg_lap, avg_fpl, total_stints,
+         session_id, account['id'])
+    )
+    db_commit()
+    return jsonify({'ok': True})
+
+
+@app.route('/engineer/history', methods=['GET'])
+def engineer_history():
+    token = request.args.get('token', '')
+    if not token:
+        return jsonify({'error': 'Token required'}), 401
+    account = _get_engineer_account(token)
+    if not account:
+        return jsonify({'error': 'Invalid token'}), 401
+
+    cur = db_exec(
+        """SELECT track_name, car_name, session_date, best_lap_s, avg_lap_s,
+                  avg_fpl_l, total_laps, total_stints, race_duration_hrs
+           FROM engineer_sessions
+           WHERE account_id=%s AND ended_at IS NOT NULL
+           ORDER BY started_at DESC LIMIT 10""",
+        (account['id'],)
+    )
+    sessions = [dict(r) for r in cur.fetchall()]
+    return jsonify({'sessions': sessions})
 
 
 @app.route('/engineer/ask', methods=['POST'])
