@@ -545,17 +545,21 @@ def engineer_validate():
 def engineer_ask():
     """
     Proxy AI queries to Claude Haiku on behalf of authenticated engineer users.
-    Body: { token, system_prompt, question }
+    Body: { token, system_prompt, question, messages? }
+    When `messages` is provided and non-empty it is used as the full multi-turn
+    conversation history (the final user turn must already be included by the
+    client).  Otherwise falls back to single-turn using `question`.
     Returns: { answer, queries_today, query_limit }
     """
     data          = request.get_json() or {}
     token         = data.get('token', '')
     system_prompt = data.get('system_prompt', '')
     question      = data.get('question', '')
+    messages      = data.get('messages', [])
 
     if not token:
         return jsonify({'error': 'Token required'}), 401
-    if not question:
+    if not messages and not question:
         return jsonify({'error': 'Question required'}), 400
 
     account = _get_engineer_account(token)
@@ -578,15 +582,19 @@ def engineer_ask():
             'quota_exceeded': True,
         }), 429
 
+    # Build message list: multi-turn if history provided, single-turn otherwise
+    if not messages:
+        messages = [{'role': 'user', 'content': question}]
+
     # Call Claude Haiku
     try:
         import anthropic
         client = anthropic.Anthropic(api_key=os.environ.get('ANTHROPIC_API_KEY', ''))
         msg = client.messages.create(
             model='claude-haiku-4-5-20251001',
-            max_tokens=200,
+            max_tokens=300,
             system=system_prompt or 'You are a professional endurance racing engineer. Be concise — 1-3 sentences.',
-            messages=[{'role': 'user', 'content': question}],
+            messages=messages,
         )
         answer = msg.content[0].text.strip()
     except Exception as e:
@@ -604,6 +612,38 @@ def engineer_ask():
         'queries_today': account['queries_today'] + 1,
         'query_limit':  FREE_QUERY_LIMIT,
     })
+
+
+@app.route('/engineer/coaching', methods=['POST'])
+def engineer_coaching():
+    """
+    Proactive lap coaching — lightweight, doesn't count against daily quota.
+    Body: {token, system_prompt, question}
+    """
+    data    = request.get_json() or {}
+    token   = data.get('token', '')
+    question = data.get('question', '')
+    system_prompt = data.get('system_prompt', '')
+
+    if not token:
+        return jsonify({'error': 'Token required'}), 401
+    account = _get_engineer_account(token)
+    if not account:
+        return jsonify({'error': 'Invalid or expired token'}), 401
+
+    try:
+        import anthropic
+        client = anthropic.Anthropic(api_key=os.environ.get('ANTHROPIC_API_KEY', ''))
+        response = client.messages.create(
+            model='claude-haiku-4-5-20251001',
+            max_tokens=120,
+            system=system_prompt,
+            messages=[{'role': 'user', 'content': question}],
+        )
+        answer = response.content[0].text.strip()
+        return jsonify({'answer': answer})
+    except Exception as e:
+        return jsonify({'error': str(e)[:100]}), 500
 
 
 @app.route('/engineer/transcribe', methods=['POST'])
