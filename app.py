@@ -681,6 +681,56 @@ def engineer_history():
     return jsonify({'sessions': sessions})
 
 
+@app.route('/engineer/track-stats', methods=['GET'])
+def engineer_track_stats():
+    """Return aggregate performance history for a specific track+car combination."""
+    token    = request.args.get('token', '')
+    track    = request.args.get('track', '').strip()
+    car      = request.args.get('car', '').strip()
+    if not token:
+        return jsonify({'error': 'Token required'}), 401
+    account = _get_engineer_account(token)
+    if not account:
+        return jsonify({'error': 'Invalid token'}), 401
+    if not track:
+        return jsonify({'error': 'track parameter required'}), 400
+
+    # Match track loosely (case-insensitive contains) to handle iRacing name variations
+    params = [account['id'], f'%{track}%']
+    car_clause = ''
+    if car:
+        car_clause = ' AND LOWER(car_name) LIKE LOWER(%s)'
+        params.append(f'%{car}%')
+
+    cur = db_exec(
+        f"""SELECT COUNT(*) AS session_count,
+                   MIN(best_lap_s)  AS best_lap_s,
+                   AVG(avg_lap_s)   AS avg_lap_s,
+                   AVG(avg_fpl_l)   AS avg_fpl_l,
+                   MAX(session_date) AS last_session_date,
+                   SUM(total_laps)   AS total_laps
+            FROM engineer_sessions
+            WHERE account_id=%s
+              AND LOWER(track_name) LIKE LOWER(%s)
+              {car_clause}
+              AND ended_at IS NOT NULL""",
+        params
+    )
+    row = cur.fetchone()
+    if not row or not row['session_count']:
+        return jsonify({'found': False, 'session_count': 0})
+
+    return jsonify({
+        'found':            True,
+        'session_count':    row['session_count'],
+        'best_lap_s':       round(row['best_lap_s'], 3) if row['best_lap_s'] else None,
+        'avg_lap_s':        round(row['avg_lap_s'], 3)  if row['avg_lap_s']  else None,
+        'avg_fpl_l':        round(row['avg_fpl_l'], 3)  if row['avg_fpl_l']  else None,
+        'last_session_date': str(row['last_session_date']) if row['last_session_date'] else None,
+        'total_laps':       row['total_laps'] or 0,
+    })
+
+
 @app.route('/engineer/ask', methods=['POST'])
 def engineer_ask():
     """
