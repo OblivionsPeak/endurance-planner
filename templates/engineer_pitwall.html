@@ -82,6 +82,13 @@
       letter-spacing: 0.05em;
     }
     #connectBtn:hover { opacity: 0.85; }
+    #connectStatus {
+      font-size: 0.75rem;
+      color: var(--dim);
+      min-height: 1.2em;
+      text-align: center;
+    }
+    #connectStatus.err { color: #e57373; }
 
     /* ── Main layout ── */
     #main {
@@ -230,6 +237,7 @@
   <p>Enter the session ID shared by your driver, or open the link they copied from the engineer.</p>
   <input id="sessionIdInput" type="number" placeholder="Session ID" />
   <button id="connectBtn">Connect</button>
+  <div id="connectStatus"></div>
 </div>
 
 <!-- Live dashboard (hidden until connected) -->
@@ -561,62 +569,90 @@
   }
 
   // ── Connection ────────────────────────────────────────────────────────────
+  function setConnectStatus(msg, isErr) {
+    const el = $('connectStatus');
+    el.textContent = msg;
+    el.className = isErr ? 'err' : '';
+  }
+
   async function connect(sid) {
     sessionId = parseInt(sid, 10);
-    if (!sessionId) return;
+    if (!sessionId) { setConnectStatus('Please enter a valid session ID.', true); return; }
 
-    // Fetch initial state
-    const res = await fetch(`/engineer/telemetry/state/${sessionId}`);
-    if (!res.ok) { alert('Session not found or not yet started.'); return; }
-    const state = await res.json();
+    $('connectBtn').disabled = true;
+    setConnectStatus('Connecting…', false);
 
-    liveFrames = state.frames || [];
-    if (state.ref_lap && state.ref_lap.length) {
-      refFrames  = state.ref_lap;
-      refLapTime = state.meta?.ref_lap_time_s ?? null;
-      $('refLapBadge').style.display = 'inline';
-      $('refLapBadge').textContent   = refLapTime
-        ? `REF: ${fmtTime(refLapTime)}`
-        : 'REF LAP LOADED';
+    try {
+      // Fetch initial state snapshot
+      let state;
+      try {
+        const res = await fetch(`/engineer/telemetry/state/${sessionId}`);
+        if (!res.ok) throw new Error(`Server returned ${res.status}`);
+        state = await res.json();
+      } catch (e) {
+        setConnectStatus(`Could not reach server: ${e.message}`, true);
+        $('connectBtn').disabled = false;
+        return;
+      }
+
+      liveFrames = state.frames || [];
+      if (state.ref_lap && state.ref_lap.length) {
+        refFrames  = state.ref_lap;
+        refLapTime = (state.meta && state.meta.ref_lap_time_s) || null;
+        $('refLapBadge').style.display = 'inline';
+        $('refLapBadge').textContent   = refLapTime ? `REF: ${fmtTime(refLapTime)}` : 'REF LAP LOADED';
+      }
+
+      for (const pair of (state.qa || [])) addQA(pair);
+
+      const meta = state.meta || {};
+      $('sessionInfo').textContent = [meta.track, meta.car, meta.driver_name]
+        .filter(Boolean).join(' · ') + (meta.track ? ` · Session ${sessionId}` : `Session ${sessionId}`);
+
+      // Show dashboard before SocketIO so page is visible even if WS is slow
+      $('setupScreen').style.display = 'none';
+      $('main').classList.add('visible');
+      $('statusText').textContent = 'Connecting to live feed…';
+      setTimeout(resizeCanvases, 50);
+
+      // Connect SocketIO
+      if (typeof io === 'undefined') {
+        $('statusText').textContent = 'Live feed unavailable (socket.io not loaded)';
+        return;
+      }
+      sock = io({ transports: ['websocket', 'polling'] });
+      sock.on('connect', () => {
+        sock.emit('join_engineer', { session_id: sessionId });
+        $('statusDot').classList.add('live');
+        $('statusText').textContent = 'Live';
+      });
+      sock.on('connect_error', (err) => {
+        $('statusDot').classList.remove('live');
+        $('statusText').textContent = `Connection error: ${err.message} — retrying…`;
+      });
+      sock.on('disconnect', () => {
+        $('statusDot').classList.remove('live');
+        $('statusText').textContent = 'Disconnected — reconnecting…';
+      });
+      sock.on('tele_frame', ({ frame }) => {
+        liveFrames.push(frame);
+        if (liveFrames.length > WINDOW_PTS * 2) liveFrames.splice(0, WINDOW_PTS);
+        updateStats(frame);
+        drawAll();
+      });
+      sock.on('ref_lap', ({ frames, lap_time_s }) => {
+        refFrames  = frames;
+        refLapTime = lap_time_s;
+        $('refLapBadge').style.display = 'inline';
+        $('refLapBadge').textContent   = lap_time_s ? `REF: ${fmtTime(lap_time_s)}` : 'REF LAP LOADED';
+        drawAll();
+      });
+      sock.on('qa_update', pair => addQA(pair));
+
+    } catch (e) {
+      setConnectStatus(`Unexpected error: ${e.message}`, true);
+      $('connectBtn').disabled = false;
     }
-
-    for (const pair of (state.qa || [])) addQA(pair);
-
-    const meta = state.meta || {};
-    $('sessionInfo').textContent = [meta.track, meta.car, meta.driver_name]
-      .filter(Boolean).join(' · ') + (meta.track ? ` · Session ${sessionId}` : `Session ${sessionId}`);
-
-    // Connect SocketIO
-    sock = io({ transports: ['websocket', 'polling'] });
-    sock.on('connect', () => {
-      sock.emit('join_engineer', { session_id: sessionId });
-      $('statusDot').classList.add('live');
-      $('statusText').textContent = 'Live';
-    });
-    sock.on('disconnect', () => {
-      $('statusDot').classList.remove('live');
-      $('statusText').textContent = 'Disconnected — reconnecting…';
-    });
-    sock.on('tele_frame', ({ frame }) => {
-      liveFrames.push(frame);
-      if (liveFrames.length > WINDOW_PTS * 2) liveFrames.splice(0, WINDOW_PTS);
-      updateStats(frame);
-      drawAll();
-    });
-    sock.on('ref_lap', ({ frames, lap_time_s }) => {
-      refFrames  = frames;
-      refLapTime = lap_time_s;
-      $('refLapBadge').style.display = 'inline';
-      $('refLapBadge').textContent   = lap_time_s ? `REF: ${fmtTime(lap_time_s)}` : 'REF LAP LOADED';
-      drawAll();
-    });
-    sock.on('qa_update', pair => addQA(pair));
-
-    // Show dashboard
-    $('setupScreen').style.display = 'none';
-    const main = $('main');
-    main.classList.add('visible');
-    setTimeout(resizeCanvases, 50);
   }
 
   function fmtTime(s) {
