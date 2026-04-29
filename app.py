@@ -3,8 +3,10 @@ import json
 import math
 import hashlib
 import secrets
+import threading
 import psycopg2
 import psycopg2.extras
+from collections import deque
 from datetime import datetime
 from itertools import permutations
 from flask import Flask, render_template, request, jsonify, g, session
@@ -18,6 +20,14 @@ app = Flask(__name__)
 app.secret_key = os.environ.get('SECRET_KEY', secrets.token_hex(32))
 socketio = SocketIO(app, async_mode='threading', cors_allowed_origins='*')
 DATABASE_URL = os.environ.get('DATABASE_URL')
+
+# ── In-memory telemetry store (ephemeral — no DB writes for high-freq frames) ─
+# Keyed by session_id (int).
+_tele_lock        = threading.Lock()
+_live_frames      = {}   # session_id -> deque of last 600 frames (~30 s at 20 fps)
+_ref_laps         = {}   # session_id -> list of frames for the reference lap
+_session_meta     = {}   # session_id -> {track, car, driver_name, best_lap_s}
+_qa_logs          = {}   # session_id -> deque of last 30 Q&A pairs
 
 
 def _hash_password(password: str) -> str:
@@ -657,7 +667,134 @@ def engineer_session_end():
          session_id, account['id'])
     )
     db_commit()
+
+    # Clean up in-memory stores for this session
+    with _tele_lock:
+        _live_frames.pop(session_id, None)
+        _ref_laps.pop(session_id, None)
+        _session_meta.pop(session_id, None)
+        _qa_logs.pop(session_id, None)
+
     return jsonify({'ok': True})
+
+
+# ---------------------------------------------------------------------------
+# Engineer pit wall — live telemetry streaming
+# ---------------------------------------------------------------------------
+
+@app.route('/engineer/pitwall/<int:session_id>')
+def engineer_pitwall(session_id):
+    """Serve the pit wall observer page for a given engineer session."""
+    return render_template('engineer_pitwall.html', session_id=session_id)
+
+
+@app.route('/engineer/telemetry/push', methods=['POST'])
+def engineer_telemetry_push():
+    """
+    Receive a high-frequency telemetry frame from the driver's EXE.
+    Body: { token, session_id, frame: {t,b,s,v,g,r,p,l,ts} }
+    Stores frame in rolling buffer and emits to pit wall observers via SocketIO.
+    """
+    data       = request.get_json(silent=True) or {}
+    token      = data.get('token', '')
+    session_id = data.get('session_id')
+    frame      = data.get('frame')
+
+    if not token or not session_id or not frame:
+        return jsonify({'ok': False}), 400
+
+    account = _get_engineer_account(token)
+    if not account:
+        return jsonify({'error': 'Invalid token'}), 401
+
+    sid = int(session_id)
+    with _tele_lock:
+        if sid not in _live_frames:
+            _live_frames[sid] = deque(maxlen=600)
+        _live_frames[sid].append(frame)
+
+        # Update session meta from frame extras if provided
+        meta = data.get('meta')
+        if meta:
+            _session_meta[sid] = meta
+
+    socketio.emit('tele_frame', {'frame': frame}, to=f'engineer_{sid}')
+    return jsonify({'ok': True})
+
+
+@app.route('/engineer/telemetry/ref_lap', methods=['POST'])
+def engineer_telemetry_ref_lap():
+    """
+    Store a completed lap's frames as the reference lap for this session.
+    Body: { token, session_id, frames: [...], lap_time_s }
+    Emits the full reference lap to all observers so they can load the overlay.
+    """
+    data       = request.get_json(silent=True) or {}
+    token      = data.get('token', '')
+    session_id = data.get('session_id')
+    frames     = data.get('frames', [])
+    lap_time_s = data.get('lap_time_s')
+
+    if not token or not session_id or not frames:
+        return jsonify({'ok': False}), 400
+
+    account = _get_engineer_account(token)
+    if not account:
+        return jsonify({'error': 'Invalid token'}), 401
+
+    sid = int(session_id)
+    with _tele_lock:
+        _ref_laps[sid] = frames
+        if sid in _session_meta:
+            _session_meta[sid]['ref_lap_time_s'] = lap_time_s
+
+    socketio.emit('ref_lap', {'frames': frames, 'lap_time_s': lap_time_s},
+                  to=f'engineer_{sid}')
+    return jsonify({'ok': True})
+
+
+@app.route('/engineer/telemetry/qa', methods=['POST'])
+def engineer_telemetry_qa():
+    """
+    Push a Q&A pair to the pit wall log (fired after each coaching response).
+    Body: { token, session_id, question, answer }
+    """
+    data       = request.get_json(silent=True) or {}
+    token      = data.get('token', '')
+    session_id = data.get('session_id')
+    question   = data.get('question', '')
+    answer     = data.get('answer', '')
+
+    if not token or not session_id:
+        return jsonify({'ok': False}), 400
+
+    account = _get_engineer_account(token)
+    if not account:
+        return jsonify({'error': 'Invalid token'}), 401
+
+    sid = int(session_id)
+    pair = {'q': question, 'a': answer, 'ts': datetime.utcnow().isoformat()}
+    with _tele_lock:
+        if sid not in _qa_logs:
+            _qa_logs[sid] = deque(maxlen=30)
+        _qa_logs[sid].append(pair)
+
+    socketio.emit('qa_update', pair, to=f'engineer_{sid}')
+    return jsonify({'ok': True})
+
+
+@app.route('/engineer/telemetry/state/<int:session_id>', methods=['GET'])
+def engineer_telemetry_state(session_id):
+    """
+    Return current snapshot for a joining observer: last N live frames +
+    reference lap + Q&A log + session meta. Called once on dashboard load.
+    """
+    with _tele_lock:
+        frames  = list(_live_frames.get(session_id, []))
+        ref     = _ref_laps.get(session_id, [])
+        qa      = list(_qa_logs.get(session_id, []))
+        meta    = _session_meta.get(session_id, {})
+    return jsonify({'frames': frames, 'ref_lap': ref, 'qa': qa, 'meta': meta})
 
 
 @app.route('/engineer/history', methods=['GET'])
@@ -2035,6 +2172,14 @@ def on_join_plan(data):
     plan_id = data.get('plan_id')
     if plan_id:
         join_room(f'plan_{plan_id}')
+
+
+@socketio.on('join_engineer')
+def on_join_engineer(data):
+    """Observer joins a pit wall room for a given engineer session."""
+    session_id = data.get('session_id')
+    if session_id:
+        join_room(f'engineer_{session_id}')
 
 
 # ---------------------------------------------------------------------------

@@ -1,0 +1,649 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Pit Wall — Live Telemetry</title>
+  <link rel="icon" type="image/x-icon" href="/static/favicon.ico" />
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --bg:      #0a0a0a;
+      --bg2:     #111111;
+      --bg3:     #1a1a1a;
+      --border:  #2a2a2a;
+      --accent:  #C49A3C;
+      --green:   #3ec46d;
+      --red:     #e03c3c;
+      --blue:    #4aa3df;
+      --yellow:  #f5c542;
+      --dim:     #555;
+      --text:    #e8e8e8;
+    }
+
+    html, body {
+      background: var(--bg);
+      color: var(--text);
+      font-family: 'Segoe UI', system-ui, monospace;
+      height: 100vh;
+      overflow: hidden;
+      display: flex;
+      flex-direction: column;
+    }
+
+    /* ── Header ── */
+    #header {
+      display: flex;
+      align-items: center;
+      gap: 1rem;
+      padding: 0.5rem 1rem;
+      background: var(--bg2);
+      border-bottom: 1px solid var(--border);
+      flex-shrink: 0;
+    }
+    #header h1 { font-size: 0.9rem; letter-spacing: 0.12em; color: var(--accent); text-transform: uppercase; }
+    #statusDot { width: 8px; height: 8px; border-radius: 50%; background: var(--dim); flex-shrink: 0; }
+    #statusDot.live { background: var(--green); box-shadow: 0 0 6px var(--green); }
+    #statusText { font-size: 0.75rem; color: var(--dim); }
+    #sessionInfo { font-size: 0.75rem; color: var(--dim); margin-left: auto; }
+
+    /* ── Setup Screen ── */
+    #setupScreen {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      flex: 1;
+      gap: 1rem;
+      padding: 2rem;
+    }
+    #setupScreen h2 { font-size: 1.1rem; color: var(--accent); letter-spacing: 0.08em; }
+    #setupScreen p  { font-size: 0.8rem; color: var(--dim); text-align: center; max-width: 300px; }
+    #sessionIdInput {
+      background: var(--bg3);
+      border: 1px solid var(--border);
+      color: var(--text);
+      padding: 0.6rem 1rem;
+      border-radius: 6px;
+      font-size: 1rem;
+      width: 200px;
+      text-align: center;
+    }
+    #connectBtn {
+      background: var(--accent);
+      color: #000;
+      border: none;
+      padding: 0.6rem 1.6rem;
+      border-radius: 6px;
+      font-size: 0.85rem;
+      font-weight: 600;
+      cursor: pointer;
+      letter-spacing: 0.05em;
+    }
+    #connectBtn:hover { opacity: 0.85; }
+
+    /* ── Main layout ── */
+    #main {
+      display: none;
+      flex: 1;
+      overflow: hidden;
+      display: none;
+      grid-template-columns: 1fr 300px;
+      grid-template-rows: auto auto 1fr;
+      gap: 1px;
+      background: var(--border);
+    }
+    #main.visible { display: grid; }
+
+    /* ── Live stats bar ── */
+    #statsBar {
+      grid-column: 1 / -1;
+      background: var(--bg2);
+      display: flex;
+      gap: 1px;
+      background: var(--border);
+    }
+    .stat-cell {
+      flex: 1;
+      background: var(--bg2);
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      padding: 0.5rem 0.5rem;
+      min-width: 70px;
+    }
+    .stat-label { font-size: 0.6rem; letter-spacing: 0.12em; color: var(--dim); text-transform: uppercase; margin-bottom: 0.2rem; }
+    .stat-value { font-size: 1.4rem; font-weight: 700; color: var(--text); line-height: 1; font-variant-numeric: tabular-nums; }
+    .stat-value.green { color: var(--green); }
+    .stat-value.yellow { color: var(--yellow); }
+    .stat-value.red { color: var(--red); }
+    .stat-unit  { font-size: 0.65rem; color: var(--dim); margin-top: 0.15rem; }
+
+    /* ── Legend ── */
+    #legend {
+      grid-column: 1 / -1;
+      background: var(--bg2);
+      display: flex;
+      align-items: center;
+      gap: 1.5rem;
+      padding: 0.3rem 1rem;
+      font-size: 0.7rem;
+      color: var(--dim);
+      border-bottom: 1px solid var(--border);
+      flex-shrink: 0;
+    }
+    .legend-item { display: flex; align-items: center; gap: 0.4rem; }
+    .legend-dot  { width: 10px; height: 3px; border-radius: 2px; }
+    #refLapBadge {
+      margin-left: auto;
+      background: var(--bg3);
+      border: 1px solid var(--accent);
+      color: var(--accent);
+      padding: 0.15rem 0.6rem;
+      border-radius: 4px;
+      font-size: 0.68rem;
+      display: none;
+    }
+
+    /* ── Canvas area ── */
+    #canvasArea {
+      background: var(--bg);
+      position: relative;
+      overflow: hidden;
+      display: flex;
+      flex-direction: column;
+      gap: 1px;
+      background: var(--border);
+    }
+    .trace-wrap {
+      flex: 1;
+      position: relative;
+      background: var(--bg);
+      overflow: hidden;
+    }
+    .trace-label {
+      position: absolute;
+      top: 6px;
+      left: 10px;
+      font-size: 0.65rem;
+      letter-spacing: 0.1em;
+      color: var(--dim);
+      text-transform: uppercase;
+      z-index: 1;
+      pointer-events: none;
+    }
+    canvas { display: block; width: 100%; height: 100%; }
+
+    /* ── Q&A panel ── */
+    #qaPanel {
+      background: var(--bg2);
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+      grid-row: 2 / 4;
+    }
+    #qaTitle {
+      padding: 0.5rem 0.8rem;
+      font-size: 0.65rem;
+      letter-spacing: 0.12em;
+      color: var(--dim);
+      text-transform: uppercase;
+      border-bottom: 1px solid var(--border);
+      flex-shrink: 0;
+    }
+    #qaList {
+      flex: 1;
+      overflow-y: auto;
+      padding: 0.5rem;
+      display: flex;
+      flex-direction: column;
+      gap: 0.6rem;
+    }
+    #qaList::-webkit-scrollbar { width: 4px; }
+    #qaList::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
+    .qa-item { background: var(--bg3); border-radius: 6px; padding: 0.5rem 0.6rem; }
+    .qa-q { font-size: 0.68rem; color: var(--dim); margin-bottom: 0.25rem; }
+    .qa-a { font-size: 0.75rem; color: var(--text); line-height: 1.4; }
+    .qa-ts { font-size: 0.6rem; color: var(--border); margin-top: 0.2rem; }
+    #qaEmpty { font-size: 0.75rem; color: var(--dim); text-align: center; padding: 2rem 1rem; }
+
+    /* ── Steering canvas wrapper ── */
+    #steerWrap {
+      position: relative;
+    }
+  </style>
+</head>
+<body>
+
+<div id="header">
+  <div id="statusDot"></div>
+  <h1>Pit Wall</h1>
+  <span id="statusText">Waiting for connection…</span>
+  <span id="sessionInfo"></span>
+</div>
+
+<!-- Setup screen -->
+<div id="setupScreen">
+  <h2>PIT WALL OBSERVER</h2>
+  <p>Enter the session ID shared by your driver, or open the link they copied from the engineer.</p>
+  <input id="sessionIdInput" type="number" placeholder="Session ID" />
+  <button id="connectBtn">Connect</button>
+</div>
+
+<!-- Live dashboard (hidden until connected) -->
+<div id="main">
+
+  <!-- Stats bar -->
+  <div id="statsBar">
+    <div class="stat-cell">
+      <div class="stat-label">Speed</div>
+      <div class="stat-value" id="sSpeed">—</div>
+      <div class="stat-unit">km/h</div>
+    </div>
+    <div class="stat-cell">
+      <div class="stat-label">Gear</div>
+      <div class="stat-value" id="sGear">—</div>
+      <div class="stat-unit">&nbsp;</div>
+    </div>
+    <div class="stat-cell">
+      <div class="stat-label">RPM</div>
+      <div class="stat-value" id="sRpm">—</div>
+      <div class="stat-unit">&nbsp;</div>
+    </div>
+    <div class="stat-cell">
+      <div class="stat-label">Throttle</div>
+      <div class="stat-value green" id="sThrottle">—</div>
+      <div class="stat-unit">%</div>
+    </div>
+    <div class="stat-cell">
+      <div class="stat-label">Brake</div>
+      <div class="stat-value red" id="sBrake">—</div>
+      <div class="stat-unit">%</div>
+    </div>
+    <div class="stat-cell">
+      <div class="stat-label">Lap</div>
+      <div class="stat-value" id="sLap">—</div>
+      <div class="stat-unit">&nbsp;</div>
+    </div>
+    <div class="stat-cell">
+      <div class="stat-label">Pos %</div>
+      <div class="stat-value" id="sPos">—</div>
+      <div class="stat-unit">% track</div>
+    </div>
+  </div>
+
+  <!-- Legend -->
+  <div id="legend">
+    <div class="legend-item">
+      <div class="legend-dot" style="background:var(--green)"></div>
+      <span>Throttle (live)</span>
+    </div>
+    <div class="legend-item">
+      <div class="legend-dot" style="background:var(--red)"></div>
+      <span>Brake (live)</span>
+    </div>
+    <div class="legend-item">
+      <div class="legend-dot" style="background:var(--accent); opacity:0.6"></div>
+      <span>Throttle (ref)</span>
+    </div>
+    <div class="legend-item">
+      <div class="legend-dot" style="background:#c44a4a; opacity:0.6"></div>
+      <span>Brake (ref)</span>
+    </div>
+    <div class="legend-item">
+      <div class="legend-dot" style="background:var(--blue)"></div>
+      <span>Steering (live)</span>
+    </div>
+    <span id="refLapBadge">REF LAP LOADED</span>
+  </div>
+
+  <!-- Canvas area: throttle/brake + steering -->
+  <div id="canvasArea">
+    <div class="trace-wrap" id="pedalWrap">
+      <div class="trace-label">Throttle &amp; Brake</div>
+      <canvas id="pedalCanvas"></canvas>
+    </div>
+    <div class="trace-wrap" id="steerWrap">
+      <div class="trace-label">Steering</div>
+      <canvas id="steerCanvas"></canvas>
+    </div>
+  </div>
+
+  <!-- Q&A panel -->
+  <div id="qaPanel">
+    <div id="qaTitle">Engineer Log</div>
+    <div id="qaList">
+      <div id="qaEmpty">No coaching messages yet</div>
+    </div>
+  </div>
+
+</div>
+
+<script src="/socket.io/socket.io.js"></script>
+<script>
+  // ── Config ────────────────────────────────────────────────────────────────
+  const WINDOW_PTS  = 500;   // how many frames to show in the trace window
+  const PEDAL_H_SPLIT = 0.5; // throttle takes top half, brake bottom half of canvas
+
+  // ── State ─────────────────────────────────────────────────────────────────
+  let sessionId  = null;
+  let sock       = null;
+  let liveFrames = [];   // rolling buffer of live frames
+  let refFrames  = [];   // full reference lap frames
+  let refLapTime = null;
+
+  // ── Canvases ──────────────────────────────────────────────────────────────
+  const pedalCanvas = document.getElementById('pedalCanvas');
+  const steerCanvas = document.getElementById('steerCanvas');
+  const pedalCtx    = pedalCanvas.getContext('2d');
+  const steerCtx    = steerCanvas.getContext('2d');
+
+  function resizeCanvases() {
+    for (const [canvas, wrap] of [[pedalCanvas, document.getElementById('pedalWrap')],
+                                   [steerCanvas, document.getElementById('steerWrap')]]) {
+      const r = wrap.getBoundingClientRect();
+      canvas.width  = r.width  * devicePixelRatio;
+      canvas.height = r.height * devicePixelRatio;
+      canvas.style.width  = r.width  + 'px';
+      canvas.style.height = r.height + 'px';
+    }
+    drawAll();
+  }
+  window.addEventListener('resize', resizeCanvases);
+
+  // ── Drawing ───────────────────────────────────────────────────────────────
+
+  function drawTrace(ctx, frames, key, color, alpha, scaleMin, scaleMax, flipY) {
+    if (!frames.length) return;
+    const W = ctx.canvas.width, H = ctx.canvas.height;
+    ctx.globalAlpha = alpha;
+    ctx.strokeStyle = color;
+    ctx.lineWidth   = devicePixelRatio * 1.5;
+    ctx.beginPath();
+    const n = frames.length;
+    frames.forEach((f, i) => {
+      const x = (i / (WINDOW_PTS - 1)) * W;
+      const raw = (f[key] ?? 0);
+      const norm = (raw - scaleMin) / (scaleMax - scaleMin);
+      const y = flipY ? (1 - norm) * H : norm * H;
+      i === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y);
+    });
+    ctx.stroke();
+    ctx.globalAlpha = 1;
+  }
+
+  function windowedRef(refFrames, liveFrames, windowPts) {
+    // Align ref frames to the live driver's current track position window.
+    // We take the same position range as the live window and extract matching ref frames.
+    if (!refFrames.length || !liveFrames.length) return [];
+    const startPct = liveFrames[0].p;
+    const endPct   = liveFrames[liveFrames.length - 1].p;
+    // Handle lap wrap: if end < start we've crossed the start/finish line
+    const wrapped = endPct < startPct;
+    return refFrames.filter(f => {
+      if (wrapped) return f.p >= startPct || f.p <= endPct;
+      return f.p >= startPct && f.p <= endPct;
+    });
+  }
+
+  function drawPedals() {
+    const W = pedalCanvas.width, H = pedalCanvas.height;
+    pedalCtx.clearRect(0, 0, W, H);
+
+    const midY = H * PEDAL_H_SPLIT;
+
+    // Separator line
+    pedalCtx.strokeStyle = '#222';
+    pedalCtx.lineWidth   = 1;
+    pedalCtx.beginPath();
+    pedalCtx.moveTo(0, midY);
+    pedalCtx.lineTo(W, midY);
+    pedalCtx.stroke();
+
+    // 100% guide lines
+    pedalCtx.strokeStyle = '#1e1e1e';
+    pedalCtx.lineWidth   = 1;
+    [0.02, 0.98].forEach(y => {
+      pedalCtx.beginPath();
+      pedalCtx.moveTo(0, y * H);
+      pedalCtx.lineTo(W, y * H);
+      pedalCtx.stroke();
+    });
+
+    const win = liveFrames.slice(-WINDOW_PTS);
+    const ref = windowedRef(refFrames, win, WINDOW_PTS);
+
+    // Ref traces (behind live)
+    if (ref.length) {
+      // Throttle ref (amber, top half)
+      pedalCtx.save();
+      pedalCtx.beginPath();
+      pedalCtx.rect(0, 0, W, midY);
+      pedalCtx.clip();
+      drawTrace(pedalCtx, ref, 't', '#C49A3C', 0.45, 0, 1, true);
+      pedalCtx.restore();
+
+      // Brake ref (dull red, bottom half — flipped so 100% goes DOWN)
+      pedalCtx.save();
+      pedalCtx.beginPath();
+      pedalCtx.rect(0, midY, W, H - midY);
+      pedalCtx.clip();
+      // remap brake to bottom half: 0 at midY, 100% at bottom
+      pedalCtx.globalAlpha = 0.45;
+      pedalCtx.strokeStyle = '#c44a4a';
+      pedalCtx.lineWidth   = devicePixelRatio * 1.5;
+      pedalCtx.beginPath();
+      ref.forEach((f, i) => {
+        const x = (i / (WINDOW_PTS - 1)) * W;
+        const y = midY + (f.b ?? 0) * (H - midY) * 0.96;
+        i === 0 ? pedalCtx.moveTo(x, y) : pedalCtx.lineTo(x, y);
+      });
+      pedalCtx.stroke();
+      pedalCtx.globalAlpha = 1;
+      pedalCtx.restore();
+    }
+
+    // Live throttle — top half (100% = top)
+    pedalCtx.save();
+    pedalCtx.beginPath();
+    pedalCtx.rect(0, 0, W, midY);
+    pedalCtx.clip();
+    pedalCtx.globalAlpha = 1;
+    pedalCtx.strokeStyle = '#3ec46d';
+    pedalCtx.lineWidth   = devicePixelRatio * 2;
+    pedalCtx.beginPath();
+    win.forEach((f, i) => {
+      const x = (i / (WINDOW_PTS - 1)) * W;
+      const y = midY - (f.t ?? 0) * midY * 0.96;
+      i === 0 ? pedalCtx.moveTo(x, y) : pedalCtx.lineTo(x, y);
+    });
+    pedalCtx.stroke();
+    pedalCtx.restore();
+
+    // Live brake — bottom half (100% = bottom)
+    pedalCtx.save();
+    pedalCtx.beginPath();
+    pedalCtx.rect(0, midY, W, H - midY);
+    pedalCtx.clip();
+    pedalCtx.globalAlpha = 1;
+    pedalCtx.strokeStyle = '#e03c3c';
+    pedalCtx.lineWidth   = devicePixelRatio * 2;
+    pedalCtx.beginPath();
+    win.forEach((f, i) => {
+      const x = (i / (WINDOW_PTS - 1)) * W;
+      const y = midY + (f.b ?? 0) * (H - midY) * 0.96;
+      i === 0 ? pedalCtx.moveTo(x, y) : pedalCtx.lineTo(x, y);
+    });
+    pedalCtx.stroke();
+    pedalCtx.restore();
+  }
+
+  function drawSteering() {
+    const W = steerCanvas.width, H = steerCanvas.height;
+    steerCtx.clearRect(0, 0, W, H);
+
+    const midY = H / 2;
+
+    // Center line
+    steerCtx.strokeStyle = '#1e1e1e';
+    steerCtx.lineWidth   = 1;
+    steerCtx.beginPath();
+    steerCtx.moveTo(0, midY);
+    steerCtx.lineTo(W, midY);
+    steerCtx.stroke();
+
+    const win = liveFrames.slice(-WINDOW_PTS);
+    const ref = windowedRef(refFrames, win, WINDOW_PTS);
+
+    // Ref steering (amber)
+    if (ref.length) {
+      steerCtx.globalAlpha = 0.4;
+      steerCtx.strokeStyle = '#C49A3C';
+      steerCtx.lineWidth   = devicePixelRatio * 1.5;
+      steerCtx.beginPath();
+      ref.forEach((f, i) => {
+        const x = (i / (WINDOW_PTS - 1)) * W;
+        // s is normalized -1..1; map to 0..H (center = midY)
+        const y = midY - (f.s ?? 0) * midY * 0.9;
+        i === 0 ? steerCtx.moveTo(x, y) : steerCtx.lineTo(x, y);
+      });
+      steerCtx.stroke();
+      steerCtx.globalAlpha = 1;
+    }
+
+    // Live steering (blue)
+    steerCtx.strokeStyle = '#4aa3df';
+    steerCtx.lineWidth   = devicePixelRatio * 2;
+    steerCtx.beginPath();
+    win.forEach((f, i) => {
+      const x = (i / (WINDOW_PTS - 1)) * W;
+      const y = midY - (f.s ?? 0) * midY * 0.9;
+      i === 0 ? steerCtx.moveTo(x, y) : steerCtx.lineTo(x, y);
+    });
+    steerCtx.stroke();
+  }
+
+  function drawAll() { drawPedals(); drawSteering(); }
+
+  // ── Stats bar ─────────────────────────────────────────────────────────────
+  function $ (id) { return document.getElementById(id); }
+
+  function updateStats(f) {
+    $('sSpeed').textContent    = Math.round((f.v ?? 0) * 3.6);
+    $('sGear').textContent     = f.g ?? '—';
+    $('sRpm').textContent      = f.r ? Math.round(f.r / 100) * 100 : '—';
+    $('sThrottle').textContent = Math.round((f.t ?? 0) * 100);
+    $('sBrake').textContent    = Math.round((f.b ?? 0) * 100);
+    $('sLap').textContent      = f.l ?? '—';
+    $('sPos').textContent      = f.p != null ? Math.round(f.p * 100) : '—';
+  }
+
+  // ── Q&A log ───────────────────────────────────────────────────────────────
+  function addQA(pair) {
+    const empty = $('qaEmpty');
+    if (empty) empty.remove();
+    const item = document.createElement('div');
+    item.className = 'qa-item';
+    const ts = new Date(pair.ts).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+    item.innerHTML = `
+      <div class="qa-q">${escHtml(pair.q)}</div>
+      <div class="qa-a">${escHtml(pair.a)}</div>
+      <div class="qa-ts">${ts}</div>`;
+    const list = $('qaList');
+    list.appendChild(item);
+    list.scrollTop = list.scrollHeight;
+  }
+
+  function escHtml(s) {
+    return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+  }
+
+  // ── Connection ────────────────────────────────────────────────────────────
+  async function connect(sid) {
+    sessionId = parseInt(sid, 10);
+    if (!sessionId) return;
+
+    // Fetch initial state
+    const res = await fetch(`/engineer/telemetry/state/${sessionId}`);
+    if (!res.ok) { alert('Session not found or not yet started.'); return; }
+    const state = await res.json();
+
+    liveFrames = state.frames || [];
+    if (state.ref_lap && state.ref_lap.length) {
+      refFrames  = state.ref_lap;
+      refLapTime = state.meta?.ref_lap_time_s ?? null;
+      $('refLapBadge').style.display = 'inline';
+      $('refLapBadge').textContent   = refLapTime
+        ? `REF: ${fmtTime(refLapTime)}`
+        : 'REF LAP LOADED';
+    }
+
+    for (const pair of (state.qa || [])) addQA(pair);
+
+    const meta = state.meta || {};
+    $('sessionInfo').textContent = [meta.track, meta.car, meta.driver_name]
+      .filter(Boolean).join(' · ') + (meta.track ? ` · Session ${sessionId}` : `Session ${sessionId}`);
+
+    // Connect SocketIO
+    sock = io({ transports: ['websocket', 'polling'] });
+    sock.on('connect', () => {
+      sock.emit('join_engineer', { session_id: sessionId });
+      $('statusDot').classList.add('live');
+      $('statusText').textContent = 'Live';
+    });
+    sock.on('disconnect', () => {
+      $('statusDot').classList.remove('live');
+      $('statusText').textContent = 'Disconnected — reconnecting…';
+    });
+    sock.on('tele_frame', ({ frame }) => {
+      liveFrames.push(frame);
+      if (liveFrames.length > WINDOW_PTS * 2) liveFrames.splice(0, WINDOW_PTS);
+      updateStats(frame);
+      drawAll();
+    });
+    sock.on('ref_lap', ({ frames, lap_time_s }) => {
+      refFrames  = frames;
+      refLapTime = lap_time_s;
+      $('refLapBadge').style.display = 'inline';
+      $('refLapBadge').textContent   = lap_time_s ? `REF: ${fmtTime(lap_time_s)}` : 'REF LAP LOADED';
+      drawAll();
+    });
+    sock.on('qa_update', pair => addQA(pair));
+
+    // Show dashboard
+    $('setupScreen').style.display = 'none';
+    const main = $('main');
+    main.classList.add('visible');
+    setTimeout(resizeCanvases, 50);
+  }
+
+  function fmtTime(s) {
+    const m = Math.floor(s / 60);
+    const sec = (s - m * 60).toFixed(3);
+    return m > 0 ? `${m}:${sec.padStart(6,'0')}` : `${sec}s`;
+  }
+
+  // ── Setup screen logic ────────────────────────────────────────────────────
+  const urlSid = "{{ session_id }}";
+  if (urlSid && urlSid !== 'None' && urlSid !== '0') {
+    $('sessionIdInput').value = urlSid;
+    connect(urlSid);
+  }
+
+  $('connectBtn').addEventListener('click', () => {
+    const sid = $('sessionIdInput').value.trim();
+    if (sid) connect(sid);
+  });
+  $('sessionIdInput').addEventListener('keydown', e => {
+    if (e.key === 'Enter') $('connectBtn').click();
+  });
+
+  // ── Render loop ───────────────────────────────────────────────────────────
+  // Fallback: redraw at 30fps even when no new frames arrive (handles resize, etc.)
+  function renderLoop() { drawAll(); requestAnimationFrame(renderLoop); }
+  renderLoop();
+</script>
+</body>
+</html>
