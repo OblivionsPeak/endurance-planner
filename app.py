@@ -31,6 +31,8 @@ _qa_logs          = {}   # session_id -> deque of last 30 Q&A pairs
 _lap_history      = {}   # session_id -> list of {lap_num, lap_time_s, position}
 _leader_lap_history = {}  # session_id -> list of {lap_num, lap_time_s, car_name}
 _fuel_state       = {}   # session_id -> {fuel_remaining, fuel_burn_per_lap}
+_tyre_wear        = {}   # session_id -> {LF, RF, LR, RR} or None
+_class_position   = {}   # session_id -> int or None
 
 
 def _hash_password(password: str) -> str:
@@ -714,6 +716,8 @@ def engineer_session_end():
         _qa_logs.pop(session_id, None)
         _leader_lap_history.pop(session_id, None)
         _fuel_state.pop(session_id, None)
+        _tyre_wear.pop(session_id, None)
+        _class_position.pop(session_id, None)
 
     return jsonify({'ok': True})
 
@@ -748,6 +752,9 @@ def engineer_telemetry_push():
         return jsonify({'error': 'Invalid token'}), 401
 
     sid = int(session_id)
+    tw = frame.get('tw')   # tyre wear dict {LF, RF, LR, RR} or None
+    cp = frame.get('cp')   # class position int or None
+
     with _tele_lock:
         if sid not in _live_frames:
             _live_frames[sid] = deque(maxlen=600)
@@ -758,9 +765,9 @@ def engineer_telemetry_push():
         if meta:
             _session_meta[sid] = meta
 
-        # Store fuel telemetry for the state snapshot
-        fuel_remaining   = data.get('fuel_remaining')
-        fuel_burn_per_lap = data.get('fuel_burn_per_lap')
+        # Store fuel telemetry from meta (preferred) or top-level fallback
+        fuel_remaining    = meta.get('fuel_remaining')    if meta else data.get('fuel_remaining')
+        fuel_burn_per_lap = meta.get('fuel_burn_per_lap') if meta else data.get('fuel_burn_per_lap')
         if fuel_remaining is not None or fuel_burn_per_lap is not None:
             if sid not in _fuel_state:
                 _fuel_state[sid] = {}
@@ -769,7 +776,27 @@ def engineer_telemetry_push():
             if fuel_burn_per_lap is not None:
                 _fuel_state[sid]['fuel_burn_per_lap'] = fuel_burn_per_lap
 
+        # Store tyre wear and class position
+        if tw is not None:
+            _tyre_wear[sid] = tw
+        if cp is not None:
+            _class_position[sid] = cp
+
+    # Build telemetry event payload (only include tw/cp if present)
+    tele_payload = {}
+    fuel_state = _fuel_state.get(sid, {})
+    if fuel_state.get('fuel_remaining') is not None:
+        tele_payload['fuel_remaining'] = fuel_state['fuel_remaining']
+    if fuel_state.get('fuel_burn_per_lap') is not None:
+        tele_payload['fuel_burn_per_lap'] = fuel_state['fuel_burn_per_lap']
+    if tw is not None:
+        tele_payload['tw'] = tw
+    if cp is not None:
+        tele_payload['cp'] = cp
+
     socketio.emit('tele_frame', {'frame': frame}, to=f'engineer_{sid}')
+    if tele_payload:
+        socketio.emit('telemetry', tele_payload, to=f'engineer_{sid}')
     return jsonify({'ok': True})
 
 
@@ -841,13 +868,15 @@ def engineer_telemetry_state(session_id):
     reference lap + Q&A log + session meta. Called once on dashboard load.
     """
     with _tele_lock:
-        frames      = list(_live_frames.get(session_id, []))
-        ref         = _ref_laps.get(session_id, [])
-        qa          = list(_qa_logs.get(session_id, []))
-        meta        = _session_meta.get(session_id, {})
-        laps        = list(_lap_history.get(session_id, []))
-        leader_laps = list(_leader_lap_history.get(session_id, []))
-        fuel        = _fuel_state.get(session_id, {})
+        frames         = list(_live_frames.get(session_id, []))
+        ref            = _ref_laps.get(session_id, [])
+        qa             = list(_qa_logs.get(session_id, []))
+        meta           = _session_meta.get(session_id, {})
+        laps           = list(_lap_history.get(session_id, []))
+        leader_laps    = list(_leader_lap_history.get(session_id, []))
+        fuel           = _fuel_state.get(session_id, {})
+        tire_wear      = _tyre_wear.get(session_id)
+        class_position = _class_position.get(session_id)
 
     fuel_remaining    = fuel.get('fuel_remaining')
     fuel_burn_per_lap = fuel.get('fuel_burn_per_lap')
@@ -857,15 +886,17 @@ def engineer_telemetry_state(session_id):
         laps_remaining_fuel = None
 
     return jsonify({
-        'frames':             frames,
-        'ref_lap':            ref,
-        'qa':                 qa,
-        'meta':               meta,
-        'laps':               laps,
-        'leader_laps':        leader_laps,
-        'fuel_remaining':     fuel_remaining,
-        'fuel_burn_per_lap':  fuel_burn_per_lap,
+        'frames':              frames,
+        'ref_lap':             ref,
+        'qa':                  qa,
+        'meta':                meta,
+        'laps':                laps,
+        'leader_laps':         leader_laps,
+        'fuel_remaining':      fuel_remaining,
+        'fuel_burn_per_lap':   fuel_burn_per_lap,
         'laps_remaining_fuel': laps_remaining_fuel,
+        'tire_wear':           tire_wear,
+        'class_position':      class_position,
     })
 
 

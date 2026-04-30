@@ -267,6 +267,27 @@
     #steerWrap {
       position: relative;
     }
+
+    /* ── Tyre wear bars ── */
+    #tyreWrap { display: flex; gap: 12px; align-items: flex-end; padding: 8px 0; }
+    .tyre-col { display: flex; flex-direction: column; align-items: center; gap: 4px; font-size: 0.7rem; }
+    .tyre-bar-bg { width: 18px; height: 60px; background: #1a2a30; border-radius: 3px; overflow: hidden; display: flex; flex-direction: column-reverse; }
+    .tyre-bar-fill { width: 100%; transition: height 0.5s, background 0.5s; }
+
+    /* ── Class position badge ── */
+    #classPosBadge {
+      display: none;
+      font-size: 0.75rem;
+      font-weight: 700;
+      padding: 0.1rem 0.45rem;
+      border-radius: 4px;
+      background: var(--bg3);
+      border: 1px solid var(--border);
+      color: var(--dim);
+      margin-left: 0.4rem;
+      white-space: nowrap;
+    }
+    #classPosBadge.leader { color: var(--green); border-color: var(--green); }
   </style>
 </head>
 <body>
@@ -276,6 +297,7 @@
   <h1>Pit Wall</h1>
   <span id="statusText">Waiting for connection…</span>
   <span id="sessionInfo"></span>
+  <span id="classPosBadge"></span>
 </div>
 
 <!-- Setup screen -->
@@ -377,6 +399,27 @@
     <div id="fuelRow" class="hidden">
       <span>&#9981;</span>
       <span id="fuelRemText">—</span>
+    </div>
+    <div id="tyreSection" style="padding: 0 0.7rem; border-bottom: 1px solid var(--border); background: var(--bg2); display: none;">
+      <div style="font-size:0.7rem;color:#68b8c4;margin-top:6px;">TYRES</div>
+      <div id="tyreWrap" style="display:none">
+        <div class="tyre-col">
+          <div class="tyre-bar-bg"><div class="tyre-bar-fill" id="tyre-fill-LF"></div></div>
+          <span id="tyre-pct-LF">--</span><span>LF</span>
+        </div>
+        <div class="tyre-col">
+          <div class="tyre-bar-bg"><div class="tyre-bar-fill" id="tyre-fill-RF"></div></div>
+          <span id="tyre-pct-RF">--</span><span>RF</span>
+        </div>
+        <div class="tyre-col">
+          <div class="tyre-bar-bg"><div class="tyre-bar-fill" id="tyre-fill-LR"></div></div>
+          <span id="tyre-pct-LR">--</span><span>LR</span>
+        </div>
+        <div class="tyre-col">
+          <div class="tyre-bar-bg"><div class="tyre-bar-fill" id="tyre-fill-RR"></div></div>
+          <span id="tyre-pct-RR">--</span><span>RR</span>
+        </div>
+      </div>
     </div>
     <div id="qaList">
       <div id="qaEmpty">No coaching messages yet</div>
@@ -741,6 +784,45 @@
     $('fuelRemText').innerHTML = remSpan + burnSpan + lapsSpan;
   }
 
+  function updateTyreWear(tw) {
+    const section = document.getElementById('tyreSection');
+    const wrap = document.getElementById('tyreWrap');
+    if (!tw || Object.values(tw).every(v => v === null)) {
+      section.style.display = 'none';
+      wrap.style.display = 'none';
+      return;
+    }
+    section.style.display = 'block';
+    wrap.style.display = 'flex';
+    ['LF','RF','LR','RR'].forEach(corner => {
+      const pct = tw[corner] != null ? Math.round(tw[corner] * 100) : null;
+      const fill = document.getElementById(`tyre-fill-${corner}`);
+      const label = document.getElementById(`tyre-pct-${corner}`);
+      if (fill && label) {
+        if (pct != null) {
+          fill.style.height = pct + '%';
+          fill.style.background = pct >= 60 ? '#00d890' : pct >= 30 ? '#f0c040' : '#e04040';
+          label.textContent = pct + '%';
+        } else {
+          fill.style.height = '0%';
+          label.textContent = '--';
+        }
+      }
+    });
+  }
+
+  function updateClassPosition(cp) {
+    const badge = document.getElementById('classPosBadge');
+    if (!cp || cp <= 0) { badge.style.display = 'none'; return; }
+    badge.style.display = 'inline';
+    badge.textContent = `P${cp} (class)`;
+    if (cp === 1) {
+      badge.classList.add('leader');
+    } else {
+      badge.classList.remove('leader');
+    }
+  }
+
   function drawAll() { drawPedals(); drawSteering(); drawLapChart(); updateFuelRow(); }
 
   // ── Stats bar ─────────────────────────────────────────────────────────────
@@ -818,6 +900,9 @@
       fuelBurnPerLap = state.fuel_burn_per_lap != null ? state.fuel_burn_per_lap : null;
       lapsFuel       = state.laps_remaining_fuel != null ? state.laps_remaining_fuel : null;
 
+      updateTyreWear(state.tire_wear || null);
+      updateClassPosition(state.class_position || 0);
+
       for (const pair of (state.qa || [])) addQA(pair);
 
       const meta = state.meta || {};
@@ -879,6 +964,8 @@
         if (data.fuel_remaining != null)   fuelRemaining  = data.fuel_remaining;
         if (data.fuel_burn_per_lap != null) fuelBurnPerLap = data.fuel_burn_per_lap;
         updateFuelRow();
+        if (data.tw !== undefined) updateTyreWear(data.tw);
+        if (data.cp !== undefined) updateClassPosition(data.cp);
       });
 
     } catch (e) {
