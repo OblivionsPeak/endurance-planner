@@ -33,6 +33,7 @@ _leader_lap_history = {}  # session_id -> list of {lap_num, lap_time_s, car_name
 _fuel_state       = {}   # session_id -> {fuel_remaining, fuel_burn_per_lap}
 _tyre_wear        = {}   # session_id -> {LF, RF, LR, RR} or None
 _class_position   = {}   # session_id -> int or None
+_gap_history      = {}   # session_id -> list of {lap_num, gap_to_leader_s}
 
 
 def _hash_password(password: str) -> str:
@@ -613,13 +614,14 @@ def engineer_session_start():
 
 @app.route('/engineer/session/lap', methods=['POST'])
 def engineer_session_lap():
-    data       = request.get_json() or {}
-    token      = data.get('token', '')
-    session_id = data.get('session_id')
-    lap_num    = data.get('lap_num', 0)
-    lap_time_s = data.get('lap_time_s', 0.0)
-    fuel_used  = data.get('fuel_used_l')
-    position   = data.get('position')
+    data             = request.get_json() or {}
+    token            = data.get('token', '')
+    session_id       = data.get('session_id')
+    lap_num          = data.get('lap_num', 0)
+    lap_time_s       = data.get('lap_time_s', 0.0)
+    fuel_used        = data.get('fuel_used_l')
+    position         = data.get('position')
+    gap_to_leader_s  = data.get('gap_to_leader_s', 0.0)
 
     if not token or not session_id:
         return jsonify({'error': 'Token and session_id required'}), 400
@@ -641,7 +643,14 @@ def engineer_session_lap():
         if sid not in _lap_history:
             _lap_history[sid] = []
         _lap_history[sid].append(lap_entry)
+        if gap_to_leader_s > 0:
+            if sid not in _gap_history:
+                _gap_history[sid] = []
+            _gap_history[sid].append({'lap_num': lap_num, 'gap_to_leader_s': gap_to_leader_s})
     socketio.emit('lap_complete', lap_entry, to=f'engineer_{sid}')
+    if gap_to_leader_s > 0:
+        socketio.emit('gap_update', {'lap_num': lap_num, 'gap_to_leader_s': gap_to_leader_s},
+                      to=f'engineer_{sid}')
 
     return jsonify({'ok': True})
 
@@ -714,10 +723,12 @@ def engineer_session_end():
         _ref_laps.pop(session_id, None)
         _session_meta.pop(session_id, None)
         _qa_logs.pop(session_id, None)
+        _lap_history.pop(session_id, None)
         _leader_lap_history.pop(session_id, None)
         _fuel_state.pop(session_id, None)
         _tyre_wear.pop(session_id, None)
         _class_position.pop(session_id, None)
+        _gap_history.pop(session_id, None)
 
     return jsonify({'ok': True})
 
@@ -877,6 +888,7 @@ def engineer_telemetry_state(session_id):
         fuel           = _fuel_state.get(session_id, {})
         tire_wear      = _tyre_wear.get(session_id)
         class_position = _class_position.get(session_id)
+        gap_history    = list(_gap_history.get(session_id, []))
 
     fuel_remaining    = fuel.get('fuel_remaining')
     fuel_burn_per_lap = fuel.get('fuel_burn_per_lap')
@@ -891,12 +903,14 @@ def engineer_telemetry_state(session_id):
         'qa':                  qa,
         'meta':                meta,
         'laps':                laps,
+        'lap_table':           laps,
         'leader_laps':         leader_laps,
         'fuel_remaining':      fuel_remaining,
         'fuel_burn_per_lap':   fuel_burn_per_lap,
         'laps_remaining_fuel': laps_remaining_fuel,
         'tire_wear':           tire_wear,
         'class_position':      class_position,
+        'gap_history':         gap_history,
     })
 
 

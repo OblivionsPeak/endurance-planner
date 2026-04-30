@@ -274,6 +274,36 @@
     .tyre-bar-bg { width: 18px; height: 60px; background: #1a2a30; border-radius: 3px; overflow: hidden; display: flex; flex-direction: column-reverse; }
     .tyre-bar-fill { width: 100%; transition: height 0.5s, background 0.5s; }
 
+    /* ── Gap chart ── */
+    #gapChartWrap {
+      flex-shrink: 0;
+      height: 80px;
+      position: relative;
+      border-bottom: 1px solid var(--border);
+      background: var(--bg);
+    }
+    #gapChartTitle {
+      position: absolute;
+      top: 5px; left: 8px;
+      font-size: 0.6rem;
+      letter-spacing: 0.1em;
+      color: var(--dim);
+      text-transform: uppercase;
+      pointer-events: none;
+      z-index: 1;
+    }
+    #gapCanvas { display: block; width: 100%; height: 100%; }
+
+    /* ── Lap history table ── */
+    #lapTableWrap {
+      flex-shrink: 0;
+      border-bottom: 1px solid var(--border);
+      background: var(--bg2);
+      padding: 0 0.7rem 6px;
+    }
+    #lapTableScroll::-webkit-scrollbar { width: 4px; }
+    #lapTableScroll::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
+
     /* ── Class position badge ── */
     #classPosBadge {
       display: none;
@@ -400,6 +430,26 @@
       <span>&#9981;</span>
       <span id="fuelRemText">—</span>
     </div>
+    <div id="gapChartWrap">
+      <div id="gapChartTitle">GAP TO CLASS LEADER</div>
+      <canvas id="gapCanvas"></canvas>
+    </div>
+    <div id="lapTableWrap" style="display:none;">
+      <div style="font-size:0.7rem; color:#68b8c4; margin-top:6px; margin-bottom:4px;">LAP HISTORY</div>
+      <div id="lapTableScroll" style="max-height:140px; overflow-y:auto;">
+        <table id="lapTable" style="width:100%; border-collapse:collapse; font-size:0.75rem;">
+          <thead>
+            <tr style="color:#68b8c4; border-bottom:1px solid #174858;">
+              <th style="text-align:left; padding:2px 6px;">Lap</th>
+              <th style="text-align:right; padding:2px 6px;">Time</th>
+              <th style="text-align:right; padding:2px 6px;">Pos</th>
+              <th style="text-align:right; padding:2px 6px;">Gap</th>
+            </tr>
+          </thead>
+          <tbody id="lapTableBody"></tbody>
+        </table>
+      </div>
+    </div>
     <div id="tyreSection" style="padding: 0 0.7rem; border-bottom: 1px solid var(--border); background: var(--bg2); display: none;">
       <div style="font-size:0.7rem;color:#68b8c4;margin-top:6px;">TYRES</div>
       <div id="tyreWrap" style="display:none">
@@ -442,6 +492,7 @@
   let refLapTime      = null;
   let lapHistory      = [];   // [{lap_num, lap_time_s, position}]
   let leaderLapHistory = [];  // [{lap_num, lap_time_s, car_name}]
+  let gapHistory      = [];   // [{lap_num, gap_to_leader_s}]
   let fuelRemaining   = null;
   let fuelBurnPerLap  = null;
   let lapsFuel        = null;
@@ -450,9 +501,11 @@
   const pedalCanvas = document.getElementById('pedalCanvas');
   const steerCanvas = document.getElementById('steerCanvas');
   const lapCanvas   = document.getElementById('lapCanvas');
+  const gapCanvas   = document.getElementById('gapCanvas');
   const pedalCtx    = pedalCanvas.getContext('2d');
   const steerCtx    = steerCanvas.getContext('2d');
   const lapCtx      = lapCanvas.getContext('2d');
+  const gapCtx      = gapCanvas.getContext('2d');
 
   function resizeCanvases() {
     for (const [canvas, wrap] of [[pedalCanvas, document.getElementById('pedalWrap')],
@@ -469,6 +522,12 @@
     lapCanvas.height = lr.height * devicePixelRatio;
     lapCanvas.style.width  = lr.width  + 'px';
     lapCanvas.style.height = lr.height + 'px';
+    const gw = document.getElementById('gapChartWrap');
+    const gr = gw.getBoundingClientRect();
+    gapCanvas.width  = gr.width  * devicePixelRatio;
+    gapCanvas.height = gr.height * devicePixelRatio;
+    gapCanvas.style.width  = gr.width  + 'px';
+    gapCanvas.style.height = gr.height + 'px';
     drawAll();
   }
   window.addEventListener('resize', resizeCanvases);
@@ -756,6 +815,127 @@
     }
   }
 
+  function drawGapChart() {
+    const W = gapCanvas.width, H = gapCanvas.height;
+    gapCtx.clearRect(0, 0, W, H);
+
+    const pts = gapHistory.slice(-30);
+
+    if (pts.length < 2) {
+      gapCtx.fillStyle = '#555';
+      gapCtx.font = `${11 * devicePixelRatio}px sans-serif`;
+      gapCtx.textAlign = 'center';
+      gapCtx.textBaseline = 'middle';
+      gapCtx.fillText('Waiting for gap data…', W / 2, H / 2);
+      gapCtx.textBaseline = 'alphabetic';
+      return;
+    }
+
+    const maxGap = Math.max(...pts.map(g => g.gap_to_leader_s));
+    const yRange = Math.max(maxGap * 1.1, 5);
+
+    const PAD_TOP = 14 * devicePixelRatio;
+    const PAD_BOT = 14 * devicePixelRatio;
+    const PAD_L   = 6  * devicePixelRatio;
+    const PAD_R   = 44 * devicePixelRatio;
+    const drawW   = W - PAD_L - PAD_R;
+    const drawH   = H - PAD_TOP - PAD_BOT;
+
+    function xOf(i) { return PAD_L + (i / (pts.length - 1)) * drawW; }
+    function yOf(g) { return PAD_TOP + (1 - g / yRange) * drawH; }
+
+    // Fill area under line
+    gapCtx.beginPath();
+    gapCtx.moveTo(xOf(0), yOf(pts[0].gap_to_leader_s));
+    pts.forEach((p, i) => gapCtx.lineTo(xOf(i), yOf(p.gap_to_leader_s)));
+    gapCtx.lineTo(xOf(pts.length - 1), PAD_TOP + drawH);
+    gapCtx.lineTo(xOf(0), PAD_TOP + drawH);
+    gapCtx.closePath();
+    gapCtx.fillStyle = 'rgba(0,200,212,0.15)';
+    gapCtx.fill();
+
+    // Dashed zero line
+    gapCtx.setLineDash([4 * devicePixelRatio, 4 * devicePixelRatio]);
+    gapCtx.strokeStyle = 'rgba(0,200,212,0.3)';
+    gapCtx.lineWidth = devicePixelRatio;
+    gapCtx.beginPath();
+    gapCtx.moveTo(PAD_L, PAD_TOP + drawH);
+    gapCtx.lineTo(PAD_L + drawW, PAD_TOP + drawH);
+    gapCtx.stroke();
+    gapCtx.setLineDash([]);
+
+    // Main line
+    gapCtx.strokeStyle = '#00c8d4';
+    gapCtx.lineWidth = devicePixelRatio * 1.5;
+    gapCtx.beginPath();
+    pts.forEach((p, i) => {
+      const x = xOf(i), y = yOf(p.gap_to_leader_s);
+      i === 0 ? gapCtx.moveTo(x, y) : gapCtx.lineTo(x, y);
+    });
+    gapCtx.stroke();
+
+    // Y-axis labels
+    gapCtx.fillStyle = '#555';
+    gapCtx.font = `${9 * devicePixelRatio}px sans-serif`;
+    gapCtx.textAlign = 'left';
+    gapCtx.fillText(maxGap.toFixed(1) + 's', PAD_L + drawW + 2 * devicePixelRatio, PAD_TOP + 4 * devicePixelRatio);
+    gapCtx.fillText('0s', PAD_L + drawW + 2 * devicePixelRatio, PAD_TOP + drawH);
+
+    // X-axis lap labels
+    gapCtx.textAlign = 'left';
+    gapCtx.fillText('L' + pts[0].lap_num, PAD_L, H - 2 * devicePixelRatio);
+    gapCtx.textAlign = 'right';
+    gapCtx.fillText('L' + pts[pts.length - 1].lap_num, PAD_L + drawW, H - 2 * devicePixelRatio);
+
+    // Current gap label at right end of line
+    const last = pts[pts.length - 1];
+    const lastX = xOf(pts.length - 1);
+    const lastY = yOf(last.gap_to_leader_s);
+    let labelColor = '#eaf7f9';
+    if (pts.length >= 3) {
+      const a = pts[pts.length - 3].gap_to_leader_s;
+      const b = pts[pts.length - 2].gap_to_leader_s;
+      const c = last.gap_to_leader_s;
+      if (c < b && b < a) labelColor = '#3ec46d';       // decreasing — good
+      else if (c > b && b > a) labelColor = '#e03c3c';  // increasing — bad
+    }
+    gapCtx.fillStyle = labelColor;
+    gapCtx.font = `bold ${10 * devicePixelRatio}px sans-serif`;
+    gapCtx.textAlign = 'left';
+    gapCtx.fillText('+' + last.gap_to_leader_s.toFixed(1) + 's',
+                    lastX + 4 * devicePixelRatio, lastY + 4 * devicePixelRatio);
+  }
+
+  function updateLapTable() {
+    const tbody = document.getElementById('lapTableBody');
+    const wrap  = document.getElementById('lapTableWrap');
+    if (!lapHistory || lapHistory.length === 0) { wrap.style.display = 'none'; return; }
+    wrap.style.display = 'block';
+
+    const recent  = [...lapHistory].reverse().slice(0, 20);
+    const validTs = lapHistory.map(l => l.lap_time_s).filter(t => t > 0);
+    const bestTime = validTs.length ? Math.min(...validTs) : null;
+
+    tbody.innerHTML = recent.map(lap => {
+      const t = lap.lap_time_s;
+      const mins = Math.floor(t / 60);
+      const secs = (t - mins * 60).toFixed(3);
+      const timeStr = `${mins}:${secs.padStart(6, '0')}`;
+      const isBest  = bestTime !== null && t === bestTime;
+      const colour  = isBest ? '#00d890' : '#eaf7f9';
+
+      const gapEntry = gapHistory.find(g => g.lap_num === lap.lap_num);
+      const gapStr   = gapEntry ? `+${gapEntry.gap_to_leader_s.toFixed(1)}s` : '—';
+
+      return `<tr style="border-bottom:1px solid #0d2430; color:${colour}">
+        <td style="padding:2px 6px;">${lap.lap_num}</td>
+        <td style="text-align:right; padding:2px 6px;">${timeStr}</td>
+        <td style="text-align:right; padding:2px 6px;">${lap.position != null ? 'P' + lap.position : '—'}</td>
+        <td style="text-align:right; padding:2px 6px; color:#68b8c4;">${gapStr}</td>
+      </tr>`;
+    }).join('');
+  }
+
   function updateFuelRow() {
     const row = $('fuelRow');
     if (fuelRemaining == null) { row.classList.add('hidden'); return; }
@@ -823,7 +1003,7 @@
     }
   }
 
-  function drawAll() { drawPedals(); drawSteering(); drawLapChart(); updateFuelRow(); }
+  function drawAll() { drawPedals(); drawSteering(); drawLapChart(); drawGapChart(); updateFuelRow(); }
 
   // ── Stats bar ─────────────────────────────────────────────────────────────
   function $ (id) { return document.getElementById(id); }
@@ -895,6 +1075,8 @@
 
       lapHistory       = (state.laps || []).filter(l => l.lap_time_s > 0);
       leaderLapHistory = (state.leader_laps || []).filter(l => l.lap_time_s > 0);
+      gapHistory       = (state.gap_history || []).filter(g => g.gap_to_leader_s > 0);
+      updateLapTable();
 
       fuelRemaining  = state.fuel_remaining  != null ? state.fuel_remaining  : null;
       fuelBurnPerLap = state.fuel_burn_per_lap != null ? state.fuel_burn_per_lap : null;
@@ -952,6 +1134,14 @@
         if (lap.lap_time_s > 0) {
           lapHistory.push(lap);
           drawLapChart();
+          updateLapTable();
+        }
+      });
+      sock.on('gap_update', g => {
+        if (g.gap_to_leader_s > 0) {
+          gapHistory.push(g);
+          drawGapChart();
+          updateLapTable();
         }
       });
       sock.on('leader_lap_complete', lap => {
