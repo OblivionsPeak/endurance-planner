@@ -216,6 +216,35 @@
     .qa-ts { font-size: 0.6rem; color: var(--border); margin-top: 0.2rem; }
     #qaEmpty { font-size: 0.75rem; color: var(--dim); text-align: center; padding: 2rem 1rem; }
 
+    /* ── Lap chart ── */
+    #lapChartWrap {
+      flex-shrink: 0;
+      height: 110px;
+      position: relative;
+      border-bottom: 1px solid var(--border);
+      background: var(--bg);
+    }
+    #lapChartTitle {
+      position: absolute;
+      top: 5px; left: 8px;
+      font-size: 0.6rem;
+      letter-spacing: 0.1em;
+      color: var(--dim);
+      text-transform: uppercase;
+      pointer-events: none;
+      z-index: 1;
+    }
+    #lapCanvas { display: block; width: 100%; height: 100%; }
+    #lapNoData {
+      position: absolute;
+      inset: 0;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 0.7rem;
+      color: var(--dim);
+    }
+
     /* ── Steering canvas wrapper ── */
     #steerWrap {
       position: relative;
@@ -322,6 +351,11 @@
   <!-- Q&A panel -->
   <div id="qaPanel">
     <div id="qaTitle">Engineer Log</div>
+    <div id="lapChartWrap">
+      <div id="lapChartTitle">Lap Times</div>
+      <canvas id="lapCanvas"></canvas>
+      <div id="lapNoData">No laps recorded yet</div>
+    </div>
     <div id="qaList">
       <div id="qaEmpty">No coaching messages yet</div>
     </div>
@@ -341,12 +375,15 @@
   let liveFrames = [];   // rolling buffer of live frames
   let refFrames  = [];   // full reference lap frames
   let refLapTime = null;
+  let lapHistory = [];   // [{lap_num, lap_time_s, position}]
 
   // ── Canvases ──────────────────────────────────────────────────────────────
   const pedalCanvas = document.getElementById('pedalCanvas');
   const steerCanvas = document.getElementById('steerCanvas');
+  const lapCanvas   = document.getElementById('lapCanvas');
   const pedalCtx    = pedalCanvas.getContext('2d');
   const steerCtx    = steerCanvas.getContext('2d');
+  const lapCtx      = lapCanvas.getContext('2d');
 
   function resizeCanvases() {
     for (const [canvas, wrap] of [[pedalCanvas, document.getElementById('pedalWrap')],
@@ -357,6 +394,12 @@
       canvas.style.width  = r.width  + 'px';
       canvas.style.height = r.height + 'px';
     }
+    const lw = document.getElementById('lapChartWrap');
+    const lr = lw.getBoundingClientRect();
+    lapCanvas.width  = lr.width  * devicePixelRatio;
+    lapCanvas.height = lr.height * devicePixelRatio;
+    lapCanvas.style.width  = lr.width  + 'px';
+    lapCanvas.style.height = lr.height + 'px';
     drawAll();
   }
   window.addEventListener('resize', resizeCanvases);
@@ -533,7 +576,60 @@
     steerCtx.stroke();
   }
 
-  function drawAll() { drawPedals(); drawSteering(); }
+  function drawLapChart() {
+    const W = lapCanvas.width, H = lapCanvas.height;
+    lapCtx.clearRect(0, 0, W, H);
+    const noData = document.getElementById('lapNoData');
+
+    const MAX_SHOW = 30;
+    const laps = lapHistory.slice(-MAX_SHOW).filter(l => l.lap_time_s > 0);
+    if (!laps.length) { noData.style.display = 'flex'; return; }
+    noData.style.display = 'none';
+
+    const times = laps.map(l => l.lap_time_s);
+    const best  = Math.min(...times);
+    const worst = Math.max(...times);
+    const range = worst - best || 1;
+
+    const PAD_TOP = 18 * devicePixelRatio;
+    const PAD_BOT = 14 * devicePixelRatio;
+    const PAD_L   = 6  * devicePixelRatio;
+    const PAD_R   = 6  * devicePixelRatio;
+    const drawH   = H - PAD_TOP - PAD_BOT;
+    const drawW   = W - PAD_L - PAD_R;
+    const barGap  = 2  * devicePixelRatio;
+    const barW    = Math.max(4 * devicePixelRatio,
+                             (drawW / laps.length) - barGap);
+
+    laps.forEach((lap, i) => {
+      const t = lap.lap_time_s;
+      const isBest = t === best;
+      const isGood = (t - best) / best < 0.01;
+      const color  = isBest ? '#3ec46d' : isGood ? '#f5c542' : '#444';
+
+      const barH  = Math.max(4 * devicePixelRatio,
+                             (1 - (t - best) / range) * drawH);
+      const x     = PAD_L + i * (barW + barGap);
+      const y     = PAD_TOP + drawH - barH;
+
+      lapCtx.fillStyle = color;
+      lapCtx.fillRect(x, y, barW, barH);
+
+      // Lap number label
+      lapCtx.fillStyle = '#555';
+      lapCtx.font      = `${9 * devicePixelRatio}px sans-serif`;
+      lapCtx.textAlign = 'center';
+      lapCtx.fillText(lap.lap_num, x + barW / 2, H - 2 * devicePixelRatio);
+    });
+
+    // Best lap time label
+    lapCtx.fillStyle = '#3ec46d';
+    lapCtx.font      = `bold ${9 * devicePixelRatio}px sans-serif`;
+    lapCtx.textAlign = 'left';
+    lapCtx.fillText(`Best: ${fmtTime(best)}`, PAD_L, 13 * devicePixelRatio);
+  }
+
+  function drawAll() { drawPedals(); drawSteering(); drawLapChart(); }
 
   // ── Stats bar ─────────────────────────────────────────────────────────────
   function $ (id) { return document.getElementById(id); }
@@ -603,6 +699,8 @@
         $('refLapBadge').textContent   = refLapTime ? `REF: ${fmtTime(refLapTime)}` : 'REF LAP LOADED';
       }
 
+      lapHistory = (state.laps || []).filter(l => l.lap_time_s > 0);
+
       for (const pair of (state.qa || [])) addQA(pair);
 
       const meta = state.meta || {};
@@ -648,6 +746,12 @@
         drawAll();
       });
       sock.on('qa_update', pair => addQA(pair));
+      sock.on('lap_complete', lap => {
+        if (lap.lap_time_s > 0) {
+          lapHistory.push(lap);
+          drawLapChart();
+        }
+      });
 
     } catch (e) {
       setConnectStatus(`Unexpected error: ${e.message}`, true);

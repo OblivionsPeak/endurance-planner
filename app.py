@@ -28,6 +28,7 @@ _live_frames      = {}   # session_id -> deque of last 600 frames (~30 s at 20 f
 _ref_laps         = {}   # session_id -> list of frames for the reference lap
 _session_meta     = {}   # session_id -> {track, car, driver_name, best_lap_s}
 _qa_logs          = {}   # session_id -> deque of last 30 Q&A pairs
+_lap_history      = {}   # session_id -> list of {lap_num, lap_time_s, position}
 
 
 def _hash_password(password: str) -> str:
@@ -629,6 +630,15 @@ def engineer_session_lap():
         (session_id, lap_num, lap_time_s, fuel_used, position, now)
     )
     db_commit()
+
+    sid = int(session_id)
+    lap_entry = {'lap_num': lap_num, 'lap_time_s': lap_time_s, 'position': position}
+    with _tele_lock:
+        if sid not in _lap_history:
+            _lap_history[sid] = []
+        _lap_history[sid].append(lap_entry)
+    socketio.emit('lap_complete', lap_entry, to=f'engineer_{sid}')
+
     return jsonify({'ok': True})
 
 
@@ -794,7 +804,8 @@ def engineer_telemetry_state(session_id):
         ref     = _ref_laps.get(session_id, [])
         qa      = list(_qa_logs.get(session_id, []))
         meta    = _session_meta.get(session_id, {})
-    return jsonify({'frames': frames, 'ref_lap': ref, 'qa': qa, 'meta': meta})
+        laps    = list(_lap_history.get(session_id, []))
+    return jsonify({'frames': frames, 'ref_lap': ref, 'qa': qa, 'meta': meta, 'laps': laps})
 
 
 @app.route('/engineer/history', methods=['GET'])
