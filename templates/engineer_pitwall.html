@@ -224,6 +224,24 @@
       border-bottom: 1px solid var(--border);
       background: var(--bg);
     }
+
+    /* ── Fuel summary row ── */
+    #fuelRow {
+      flex-shrink: 0;
+      padding: 0.35rem 0.7rem;
+      font-size: 0.72rem;
+      color: var(--dim);
+      border-bottom: 1px solid var(--border);
+      display: flex;
+      align-items: center;
+      gap: 0.4rem;
+      background: var(--bg2);
+      min-height: 1.8rem;
+    }
+    #fuelRow.hidden { display: none; }
+    #fuelLaps.green  { color: var(--green); }
+    #fuelLaps.yellow { color: var(--yellow); }
+    #fuelLaps.red    { color: var(--red); }
     #lapChartTitle {
       position: absolute;
       top: 5px; left: 8px;
@@ -356,6 +374,10 @@
       <canvas id="lapCanvas"></canvas>
       <div id="lapNoData">No laps recorded yet</div>
     </div>
+    <div id="fuelRow" class="hidden">
+      <span>&#9981;</span>
+      <span id="fuelRemText">—</span>
+    </div>
     <div id="qaList">
       <div id="qaEmpty">No coaching messages yet</div>
     </div>
@@ -370,12 +392,16 @@
   const PEDAL_H_SPLIT = 0.5; // throttle takes top half, brake bottom half of canvas
 
   // ── State ─────────────────────────────────────────────────────────────────
-  let sessionId  = null;
-  let sock       = null;
-  let liveFrames = [];   // rolling buffer of live frames
-  let refFrames  = [];   // full reference lap frames
-  let refLapTime = null;
-  let lapHistory = [];   // [{lap_num, lap_time_s, position}]
+  let sessionId       = null;
+  let sock            = null;
+  let liveFrames      = [];   // rolling buffer of live frames
+  let refFrames       = [];   // full reference lap frames
+  let refLapTime      = null;
+  let lapHistory      = [];   // [{lap_num, lap_time_s, position}]
+  let leaderLapHistory = [];  // [{lap_num, lap_time_s, car_name}]
+  let fuelRemaining   = null;
+  let fuelBurnPerLap  = null;
+  let lapsFuel        = null;
 
   // ── Canvases ──────────────────────────────────────────────────────────────
   const pedalCanvas = document.getElementById('pedalCanvas');
@@ -582,54 +608,140 @@
     const noData = document.getElementById('lapNoData');
 
     const MAX_SHOW = 30;
-    const laps = lapHistory.slice(-MAX_SHOW).filter(l => l.lap_time_s > 0);
-    if (!laps.length) { noData.style.display = 'flex'; return; }
+    const playerLaps = lapHistory.slice(-MAX_SHOW).filter(l => l.lap_time_s > 0);
+    const leaderLaps = leaderLapHistory.slice(-MAX_SHOW).filter(l => l.lap_time_s > 0);
+
+    if (!playerLaps.length && !leaderLaps.length) { noData.style.display = 'flex'; return; }
     noData.style.display = 'none';
 
-    const times = laps.map(l => l.lap_time_s);
-    const best  = Math.min(...times);
-    const worst = Math.max(...times);
+    // Build a unified lap-number set so bars line up by lap number
+    const allLapNums = Array.from(new Set([
+      ...playerLaps.map(l => l.lap_num),
+      ...leaderLaps.map(l => l.lap_num),
+    ])).sort((a, b) => a - b).slice(-MAX_SHOW);
+
+    const playerMap = Object.fromEntries(playerLaps.map(l => [l.lap_num, l.lap_time_s]));
+    const leaderMap = Object.fromEntries(leaderLaps.map(l => [l.lap_num, l.lap_time_s]));
+
+    const allTimes = [
+      ...Object.values(playerMap),
+      ...Object.values(leaderMap),
+    ];
+    const best  = Math.min(...allTimes);
+    const worst = Math.max(...allTimes);
     const range = worst - best || 1;
 
-    const PAD_TOP = 18 * devicePixelRatio;
-    const PAD_BOT = 14 * devicePixelRatio;
-    const PAD_L   = 6  * devicePixelRatio;
-    const PAD_R   = 6  * devicePixelRatio;
-    const drawH   = H - PAD_TOP - PAD_BOT;
-    const drawW   = W - PAD_L - PAD_R;
-    const barGap  = 2  * devicePixelRatio;
-    const barW    = Math.max(4 * devicePixelRatio,
-                             (drawW / laps.length) - barGap);
+    const playerBest = playerLaps.length ? Math.min(...playerLaps.map(l => l.lap_time_s)) : null;
 
-    laps.forEach((lap, i) => {
-      const t = lap.lap_time_s;
-      const isBest = t === best;
-      const isGood = (t - best) / best < 0.01;
-      const color  = isBest ? '#3ec46d' : isGood ? '#f5c542' : '#444';
+    const PAD_TOP  = 18 * devicePixelRatio;
+    const PAD_BOT  = 14 * devicePixelRatio;
+    const PAD_L    = 6  * devicePixelRatio;
+    const PAD_R    = 6  * devicePixelRatio;
+    const drawH    = H - PAD_TOP - PAD_BOT;
+    const drawW    = W - PAD_L - PAD_R;
+    const groupGap = 3  * devicePixelRatio;
+    const barGap   = 1  * devicePixelRatio;
+    const hasLeader = leaderLaps.length > 0;
+    // Each group occupies (groupW) px; inside: 1 or 2 bars
+    const barsPerGroup = hasLeader ? 2 : 1;
+    const groupW  = Math.max((barsPerGroup * 4 + barGap) * devicePixelRatio,
+                             (drawW / allLapNums.length) - groupGap);
+    const barW    = Math.max(3 * devicePixelRatio,
+                             (groupW - barGap * (barsPerGroup - 1)) / barsPerGroup);
 
-      const barH  = Math.max(4 * devicePixelRatio,
-                             (1 - (t - best) / range) * drawH);
-      const x     = PAD_L + i * (barW + barGap);
-      const y     = PAD_TOP + drawH - barH;
+    allLapNums.forEach((lapNum, i) => {
+      const groupX = PAD_L + i * (groupW + groupGap);
+      const centerX = groupX + groupW / 2;
 
-      lapCtx.fillStyle = color;
-      lapCtx.fillRect(x, y, barW, barH);
+      const playerT = playerMap[lapNum];
+      const leaderT = leaderMap[lapNum];
+
+      // Player bar (left)
+      if (playerT != null) {
+        const isBest = playerT === playerBest;
+        const isGood = playerBest != null && (playerT - playerBest) / playerBest < 0.01;
+        const color  = isBest ? '#3ec46d' : isGood ? '#f5c542' : '#444';
+        const barH   = Math.max(4 * devicePixelRatio, (1 - (playerT - best) / range) * drawH);
+        const x      = hasLeader ? groupX : groupX + (groupW - barW) / 2;
+        const y      = PAD_TOP + drawH - barH;
+        lapCtx.fillStyle = color;
+        lapCtx.fillRect(x, y, barW, barH);
+      }
+
+      // Leader bar (right)
+      if (hasLeader && leaderT != null) {
+        const barH = Math.max(4 * devicePixelRatio, (1 - (leaderT - best) / range) * drawH);
+        const x    = groupX + barW + barGap;
+        const y    = PAD_TOP + drawH - barH;
+        lapCtx.fillStyle = '#9060f0';
+        lapCtx.fillRect(x, y, barW, barH);
+      }
 
       // Lap number label
       lapCtx.fillStyle = '#555';
       lapCtx.font      = `${9 * devicePixelRatio}px sans-serif`;
       lapCtx.textAlign = 'center';
-      lapCtx.fillText(lap.lap_num, x + barW / 2, H - 2 * devicePixelRatio);
+      lapCtx.fillText(lapNum, centerX, H - 2 * devicePixelRatio);
     });
 
-    // Best lap time label
-    lapCtx.fillStyle = '#3ec46d';
-    lapCtx.font      = `bold ${9 * devicePixelRatio}px sans-serif`;
-    lapCtx.textAlign = 'left';
-    lapCtx.fillText(`Best: ${fmtTime(best)}`, PAD_L, 13 * devicePixelRatio);
+    // Best lap time label (player)
+    if (playerBest != null) {
+      lapCtx.fillStyle = '#3ec46d';
+      lapCtx.font      = `bold ${9 * devicePixelRatio}px sans-serif`;
+      lapCtx.textAlign = 'left';
+      lapCtx.fillText(`Best: ${fmtTime(playerBest)}`, PAD_L, 13 * devicePixelRatio);
+    }
+
+    // Legend (top-right)
+    if (hasLeader) {
+      const fontSize = 8 * devicePixelRatio;
+      lapCtx.font = `${fontSize}px sans-serif`;
+      const legendText1 = '■ You';
+      const legendText2 = '■ Leader';
+      const t2W = lapCtx.measureText(legendText2).width;
+      const t1W = lapCtx.measureText(legendText1).width;
+      const gap = 6 * devicePixelRatio;
+      const totalW = t1W + gap + t2W;
+      let lx = W - PAD_R - totalW;
+      const ly = 11 * devicePixelRatio;
+      lapCtx.fillStyle = '#3ec46d';
+      lapCtx.textAlign = 'left';
+      lapCtx.fillText(legendText1, lx, ly);
+      lx += t1W + gap;
+      lapCtx.fillStyle = '#9060f0';
+      lapCtx.fillText(legendText2, lx, ly);
+    }
   }
 
-  function drawAll() { drawPedals(); drawSteering(); drawLapChart(); }
+  function updateFuelRow() {
+    const row = $('fuelRow');
+    if (fuelRemaining == null) { row.classList.add('hidden'); return; }
+    row.classList.remove('hidden');
+
+    const burn = fuelBurnPerLap != null ? fuelBurnPerLap : 0;
+    const laps  = (burn > 0) ? (fuelRemaining / burn) : null;
+    lapsFuel = laps != null ? Math.floor(laps) : null;
+
+    let lapsStr = '';
+    let lapsClass = '';
+    if (lapsFuel != null) {
+      lapsStr = `· ~${lapsFuel} laps`;
+      lapsClass = lapsFuel >= 5 ? 'green' : lapsFuel >= 2 ? 'yellow' : 'red';
+    }
+
+    const remStr  = fuelRemaining.toFixed(1) + 'L remaining';
+    const burnStr = burn > 0 ? ` · ${burn.toFixed(2)}L/lap ` : ' ';
+
+    const remSpan  = `<span>${remStr}</span>`;
+    const burnSpan = `<span>${burnStr}</span>`;
+    const lapsSpan = lapsFuel != null
+      ? `<span id="fuelLaps" class="${lapsClass}">${lapsStr}</span>`
+      : '';
+
+    $('fuelRemText').innerHTML = remSpan + burnSpan + lapsSpan;
+  }
+
+  function drawAll() { drawPedals(); drawSteering(); drawLapChart(); updateFuelRow(); }
 
   // ── Stats bar ─────────────────────────────────────────────────────────────
   function $ (id) { return document.getElementById(id); }
@@ -699,7 +811,12 @@
         $('refLapBadge').textContent   = refLapTime ? `REF: ${fmtTime(refLapTime)}` : 'REF LAP LOADED';
       }
 
-      lapHistory = (state.laps || []).filter(l => l.lap_time_s > 0);
+      lapHistory       = (state.laps || []).filter(l => l.lap_time_s > 0);
+      leaderLapHistory = (state.leader_laps || []).filter(l => l.lap_time_s > 0);
+
+      fuelRemaining  = state.fuel_remaining  != null ? state.fuel_remaining  : null;
+      fuelBurnPerLap = state.fuel_burn_per_lap != null ? state.fuel_burn_per_lap : null;
+      lapsFuel       = state.laps_remaining_fuel != null ? state.laps_remaining_fuel : null;
 
       for (const pair of (state.qa || [])) addQA(pair);
 
@@ -751,6 +868,17 @@
           lapHistory.push(lap);
           drawLapChart();
         }
+      });
+      sock.on('leader_lap_complete', lap => {
+        if (lap.lap_time_s > 0) {
+          leaderLapHistory.push(lap);
+          drawLapChart();
+        }
+      });
+      sock.on('telemetry', data => {
+        if (data.fuel_remaining != null)   fuelRemaining  = data.fuel_remaining;
+        if (data.fuel_burn_per_lap != null) fuelBurnPerLap = data.fuel_burn_per_lap;
+        updateFuelRow();
       });
 
     } catch (e) {

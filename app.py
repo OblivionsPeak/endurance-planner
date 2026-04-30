@@ -29,6 +29,8 @@ _ref_laps         = {}   # session_id -> list of frames for the reference lap
 _session_meta     = {}   # session_id -> {track, car, driver_name, best_lap_s}
 _qa_logs          = {}   # session_id -> deque of last 30 Q&A pairs
 _lap_history      = {}   # session_id -> list of {lap_num, lap_time_s, position}
+_leader_lap_history = {}  # session_id -> list of {lap_num, lap_time_s, car_name}
+_fuel_state       = {}   # session_id -> {fuel_remaining, fuel_burn_per_lap}
 
 
 def _hash_password(password: str) -> str:
@@ -642,6 +644,32 @@ def engineer_session_lap():
     return jsonify({'ok': True})
 
 
+@app.route('/engineer/session/leader_lap', methods=['POST'])
+def engineer_session_leader_lap():
+    data       = request.get_json() or {}
+    token      = data.get('token', '')
+    session_id = data.get('session_id')
+    lap_num    = data.get('lap_num', 0)
+    lap_time_s = data.get('lap_time_s', 0.0)
+    car_name   = data.get('car_name', '')
+
+    if not token or not session_id:
+        return jsonify({'error': 'Token and session_id required'}), 400
+    account = _get_engineer_account(token)
+    if not account:
+        return jsonify({'error': 'Invalid token'}), 401
+
+    sid = int(session_id)
+    leader_lap_entry = {'lap_num': lap_num, 'lap_time_s': lap_time_s, 'car_name': car_name}
+    with _tele_lock:
+        if sid not in _leader_lap_history:
+            _leader_lap_history[sid] = []
+        _leader_lap_history[sid].append(leader_lap_entry)
+    socketio.emit('leader_lap_complete', leader_lap_entry, to=f'engineer_{sid}')
+
+    return jsonify({'ok': True})
+
+
 @app.route('/engineer/session/end', methods=['POST'])
 def engineer_session_end():
     data       = request.get_json() or {}
@@ -684,6 +712,8 @@ def engineer_session_end():
         _ref_laps.pop(session_id, None)
         _session_meta.pop(session_id, None)
         _qa_logs.pop(session_id, None)
+        _leader_lap_history.pop(session_id, None)
+        _fuel_state.pop(session_id, None)
 
     return jsonify({'ok': True})
 
@@ -727,6 +757,17 @@ def engineer_telemetry_push():
         meta = data.get('meta')
         if meta:
             _session_meta[sid] = meta
+
+        # Store fuel telemetry for the state snapshot
+        fuel_remaining   = data.get('fuel_remaining')
+        fuel_burn_per_lap = data.get('fuel_burn_per_lap')
+        if fuel_remaining is not None or fuel_burn_per_lap is not None:
+            if sid not in _fuel_state:
+                _fuel_state[sid] = {}
+            if fuel_remaining is not None:
+                _fuel_state[sid]['fuel_remaining'] = fuel_remaining
+            if fuel_burn_per_lap is not None:
+                _fuel_state[sid]['fuel_burn_per_lap'] = fuel_burn_per_lap
 
     socketio.emit('tele_frame', {'frame': frame}, to=f'engineer_{sid}')
     return jsonify({'ok': True})
@@ -800,12 +841,32 @@ def engineer_telemetry_state(session_id):
     reference lap + Q&A log + session meta. Called once on dashboard load.
     """
     with _tele_lock:
-        frames  = list(_live_frames.get(session_id, []))
-        ref     = _ref_laps.get(session_id, [])
-        qa      = list(_qa_logs.get(session_id, []))
-        meta    = _session_meta.get(session_id, {})
-        laps    = list(_lap_history.get(session_id, []))
-    return jsonify({'frames': frames, 'ref_lap': ref, 'qa': qa, 'meta': meta, 'laps': laps})
+        frames      = list(_live_frames.get(session_id, []))
+        ref         = _ref_laps.get(session_id, [])
+        qa          = list(_qa_logs.get(session_id, []))
+        meta        = _session_meta.get(session_id, {})
+        laps        = list(_lap_history.get(session_id, []))
+        leader_laps = list(_leader_lap_history.get(session_id, []))
+        fuel        = _fuel_state.get(session_id, {})
+
+    fuel_remaining    = fuel.get('fuel_remaining')
+    fuel_burn_per_lap = fuel.get('fuel_burn_per_lap')
+    if fuel_burn_per_lap and fuel_burn_per_lap > 0 and fuel_remaining is not None:
+        laps_remaining_fuel = round(fuel_remaining / fuel_burn_per_lap, 1)
+    else:
+        laps_remaining_fuel = None
+
+    return jsonify({
+        'frames':             frames,
+        'ref_lap':            ref,
+        'qa':                 qa,
+        'meta':               meta,
+        'laps':               laps,
+        'leader_laps':        leader_laps,
+        'fuel_remaining':     fuel_remaining,
+        'fuel_burn_per_lap':  fuel_burn_per_lap,
+        'laps_remaining_fuel': laps_remaining_fuel,
+    })
 
 
 @app.route('/engineer/history', methods=['GET'])
